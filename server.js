@@ -29,7 +29,11 @@ app.post('/render', async (req, res) => {
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-extensions',
-        '--single-process',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--no-first-run',
+        '--no-zygote',
       ],
     });
 
@@ -44,7 +48,7 @@ app.post('/render', async (req, res) => {
     // Navigate and wait for network to be idle
     await page.goto(url, {
       waitUntil: 'networkidle2',
-      timeout: 80800,
+      timeout: 30000,
     });
 
     // Wait a bit more for JS frameworks to finish rendering
