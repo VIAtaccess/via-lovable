@@ -44,7 +44,7 @@ app.post('/render', async (req, res) => {
     // Navigate and wait for network to be idle
     await page.goto(url, {
       waitUntil: 'networkidle2',
-      timeout: 30000,
+      timeout: 80800,
     });
 
     // Wait a bit more for JS frameworks to finish rendering
@@ -66,7 +66,7 @@ app.post('/render', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`🚀 Puppeteer renderer running on port ${PORT}`);
 });
