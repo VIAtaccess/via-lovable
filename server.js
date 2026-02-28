@@ -188,6 +188,7 @@ app.post('/analyze', async (req, res) => {
       // ===== 2. analyzeMedia =====
       const analyzeMedia = () => {
         const results = [];
+        // 1. <video> elements
         document.querySelectorAll('video').forEach((video) => {
           const tracks = video.querySelectorAll('track');
           const trackKinds = Array.from(tracks).map(t => t.getAttribute('kind') || 'subtitles');
@@ -200,10 +201,13 @@ app.post('/analyze', async (req, res) => {
           if (!trackKinds.includes('captions') && !trackKinds.includes('subtitles') && hasTracks) issues.push('Nenhuma track de legendas');
           if (!trackKinds.includes('descriptions')) issues.push('Sem audiodescrição (<track kind="descriptions">)');
           if (autoplay && !hasControls) issues.push('Autoplay ativado sem controles visíveis');
+          if (!hasControls) issues.push('Vídeo sem controles nativos');
           let status = 'approved';
-          if (issues.length > 0) status = issues.some(i => i.includes('Sem elemento')) ? 'error' : 'warning';
+          if (issues.length > 0) status = issues.some(i => i.includes('Sem elemento') || i.includes('sem controles')) ? 'error' : 'warning';
           results.push({ type: 'video', src, hasControls, autoplay, hasTracks, trackKinds, issues, status, htmlSnippet: snippet(video) });
         });
+
+        // 2. <audio> elements
         document.querySelectorAll('audio').forEach((audio) => {
           const hasControls = audio.hasAttribute('controls');
           const autoplay = audio.hasAttribute('autoplay');
@@ -213,16 +217,77 @@ app.post('/analyze', async (req, res) => {
           issues.push('Verifique se há transcrição textual disponível para este áudio');
           results.push({ type: 'audio', src, hasControls, autoplay, hasTracks: false, trackKinds: [], issues, status: (autoplay && !hasControls) ? 'error' : 'warning', htmlSnippet: snippet(audio) });
         });
+
+        // 3. Iframes with video embeds (YouTube, Vimeo, etc.)
         document.querySelectorAll('iframe').forEach((iframe) => {
-          const src = iframe.getAttribute('src') || '';
-          const isVideo = /youtube|vimeo|dailymotion|wistia|tiktok|facebook.*video|twitch/i.test(src);
+          const src = iframe.getAttribute('src') || iframe.getAttribute('data-src') || '';
+          const isVideo = /youtube|youtu\.be|vimeo|dailymotion|wistia|tiktok|facebook.*video|twitch|streamable|loom|vidyard|brightcove|jwplayer|kaltura|panopto|mediasite|sproutvideo/i.test(src);
           if (!isVideo) return;
           const title = iframe.getAttribute('title');
           const issues = [];
           if (!title || title.trim() === '') issues.push('Iframe de vídeo sem atributo title descritivo');
           issues.push('Vídeo incorporado — verifique legendas na plataforma de origem');
+          issues.push('Verifique se audiodescrição está disponível');
           results.push({ type: 'video', src, hasControls: true, autoplay: /autoplay/i.test(src), hasTracks: false, trackKinds: [], issues, status: (!title || title.trim() === '') ? 'error' : 'warning', htmlSnippet: snippet(iframe) });
         });
+
+        // 4. <object> and <embed> with video/audio
+        document.querySelectorAll('object, embed').forEach((el) => {
+          const src = el.getAttribute('data') || el.getAttribute('src') || '';
+          const type = el.getAttribute('type') || '';
+          const isVideo = /video|mp4|webm|ogv|avi|mov|flv|wmv/i.test(src) || /video/i.test(type);
+          const isAudio = /audio|mp3|wav|ogg|midi|aac|flac/i.test(src) || /audio/i.test(type);
+          if (!isVideo && !isAudio) return;
+          const mediaType = isVideo ? 'video' : 'audio';
+          const issues = [];
+          issues.push(`Elemento <${el.tagName.toLowerCase()}> com ${mediaType} — verifique acessibilidade e controles`);
+          const title = el.getAttribute('title')?.trim();
+          if (!title) issues.push('Sem atributo title descritivo');
+          results.push({ type: mediaType, src, hasControls: false, autoplay: false, hasTracks: false, trackKinds: [], issues, status: 'warning', htmlSnippet: snippet(el) });
+        });
+
+        // 5. Custom video players (div-based with video-related classes/attributes)
+        const videoPlayerSelectors = [
+          '[class*="video-player"]', '[class*="video-container"]', '[class*="video-wrapper"]',
+          '[class*="player-container"]', '[class*="media-player"]', '[class*="video_player"]',
+          '[data-video]', '[data-video-id]', '[data-youtube]', '[data-vimeo]',
+          '[class*="plyr"]', '[class*="vjs"]', '[class*="jwplayer"]', '[class*="mejs"]',
+          '.video-js', '.flowplayer', '.mediaelement',
+        ];
+        const videoPlayerEls = document.querySelectorAll(videoPlayerSelectors.join(','));
+        videoPlayerEls.forEach((el) => {
+          // Skip if already has a video/iframe child (already analyzed)
+          if (el.querySelector('video, iframe')) return;
+          const issues = [];
+          issues.push('Player de vídeo customizado detectado — verifique legendas e audiodescrição');
+          issues.push('Verifique se os controles são acessíveis por teclado');
+          const src = el.getAttribute('data-video') || el.getAttribute('data-src') || el.getAttribute('data-video-id') || '';
+          results.push({ type: 'video', src: src || '(player customizado)', hasControls: false, autoplay: false, hasTracks: false, trackKinds: [], issues, status: 'warning', htmlSnippet: snippet(el, 400) });
+        });
+
+        // 6. Links to media files
+        document.querySelectorAll('a[href]').forEach((a) => {
+          const href = a.getAttribute('href') || '';
+          const isVideoLink = /\.(mp4|webm|ogv|avi|mov|flv|wmv|m4v|mkv)(\?|$)/i.test(href);
+          const isAudioLink = /\.(mp3|wav|ogg|aac|flac|m4a|wma)(\?|$)/i.test(href);
+          if (!isVideoLink && !isAudioLink) return;
+          const mediaType = isVideoLink ? 'video' : 'audio';
+          const text = a.textContent?.trim() || '';
+          const issues = [];
+          issues.push(`Link para arquivo de ${mediaType} — verifique se há alternativa acessível`);
+          if (isVideoLink) {
+            issues.push('Verifique se legendas e audiodescrição estão disponíveis');
+          } else {
+            issues.push('Verifique se há transcrição textual disponível');
+          }
+          results.push({ type: mediaType, src: href, hasControls: false, autoplay: false, hasTracks: false, trackKinds: [], issues, status: 'warning', htmlSnippet: snippet(a, 300) });
+        });
+
+        // If no media found at all, report as approved (no media = no violation)
+        if (results.length === 0) {
+          results.push({ type: 'video', src: '', hasControls: true, autoplay: false, hasTracks: true, trackKinds: [], issues: ['Nenhum elemento de mídia encontrado na página'], status: 'approved', htmlSnippet: '' });
+        }
+
         return results;
       };
 
@@ -696,8 +761,16 @@ app.post('/analyze', async (req, res) => {
       const criteria = [
         { id: '1.1.1', name: 'Conteúdo não textual', wcagLevel: 'A', ...countByStatus(images) },
         { id: '1.2.1', name: 'Áudio/Vídeo pré-gravados', wcagLevel: 'A', ...countByStatus(media) },
-        { id: '1.2.2', name: 'Legendas (Pré-gravadas)', wcagLevel: 'A', ...countByStatus(media.filter(m => m.type === 'video').map(m => ({ ...m, status: m.trackKinds.includes('captions') || m.trackKinds.includes('subtitles') ? 'approved' : 'error' }))) },
-        { id: '1.2.3', name: 'Audiodescrição (Pré-gravada)', wcagLevel: 'A', ...countByStatus(media.filter(m => m.type === 'video').map(m => ({ ...m, status: m.trackKinds.includes('descriptions') ? 'approved' : 'error' }))) },
+        { id: '1.2.2', name: 'Legendas (Pré-gravadas)', wcagLevel: 'A', ...countByStatus((() => {
+          const videoMedia = media.filter(m => m.type === 'video');
+          if (videoMedia.length === 0) return [{ status: 'approved' }];
+          return videoMedia.map(m => ({ ...m, status: (m.trackKinds.includes('captions') || m.trackKinds.includes('subtitles')) ? 'approved' : m.issues.some(i => i.includes('Nenhum elemento')) ? 'approved' : 'error' }));
+        })()) },
+        { id: '1.2.3', name: 'Audiodescrição (Pré-gravada)', wcagLevel: 'A', ...countByStatus((() => {
+          const videoMedia = media.filter(m => m.type === 'video');
+          if (videoMedia.length === 0) return [{ status: 'approved' }];
+          return videoMedia.map(m => ({ ...m, status: m.trackKinds.includes('descriptions') ? 'approved' : m.issues.some(i => i.includes('Nenhum elemento')) ? 'approved' : 'error' }));
+        })()) },
         { id: '1.3.1', name: 'Informação e Relações', wcagLevel: 'A', ...countByStatus(structure) },
         { id: '1.3.2', name: 'Sequência Significativa', wcagLevel: 'A', ...countByStatus(sequence) },
         { id: '1.3.3', name: 'Características Sensoriais', wcagLevel: 'A', ...countByStatus(sensory) },
