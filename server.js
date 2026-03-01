@@ -1677,7 +1677,6 @@ app.post('/analyze', async (req, res) => {
             results.push({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: [], status: 'approved', htmlSnippet: '' });
           }
         }
-        }
         return results;
       };
       const statusMessages = analyzeStatusMessages();
