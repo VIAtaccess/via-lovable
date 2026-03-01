@@ -1159,85 +1159,7 @@ app.post('/analyze', async (req, res) => {
         return results;
       };
 
-      // ===== 9k. analyzeOnFocus (WCAG 3.2.1) =====
-      const analyzeOnFocus = () => {
-        const results = [];
-        document.querySelectorAll('[onfocus]').forEach((el) => {
-          const handler = el.getAttribute('onfocus') || '';
-          const changesContext = /submit|window\.open|location|\.href|alert|confirm|prompt/i.test(handler);
-          results.push({
-            element: el.tagName.toLowerCase(),
-            issue: changesContext ? 'onfocus causa mudança de contexto (submit/redirect/popup)' : 'onfocus detectado — verifique se não altera contexto',
-            status: changesContext ? 'error' : 'warning',
-            htmlSnippet: snippet(el),
-            onFocusType: changesContext ? 'context-change' : 'handler',
-          });
-        });
-        // Check autofocus that may disorient
-        document.querySelectorAll('[autofocus]').forEach((el) => {
-          results.push({
-            element: el.tagName.toLowerCase(),
-            issue: 'Elemento com autofocus — pode desorientar usuários de leitores de tela',
-            status: 'warning',
-            htmlSnippet: snippet(el),
-            onFocusType: 'autofocus',
-          });
-        });
-        if (results.length === 0) {
-          results.push({ element: 'page', issue: 'Nenhuma mudança de contexto ao receber foco — OK.', status: 'approved', htmlSnippet: '', onFocusType: 'approved' });
-        }
-        return results;
-      };
-
-      // ===== 9l. analyzeOnInput (WCAG 3.2.2) =====
-      const analyzeOnInput = () => {
-        const results = [];
-        // Select that auto-submits
-        document.querySelectorAll('select[onchange]').forEach((el) => {
-          const handler = el.getAttribute('onchange') || '';
-          const changesContext = /submit|window\.open|location|\.href|this\.form\.submit/i.test(handler);
-          results.push({
-            element: 'select',
-            issue: changesContext ? 'Select com onchange que submete/redireciona — mudança de contexto sem aviso' : 'Select com onchange — verifique se não altera contexto inesperadamente',
-            status: changesContext ? 'error' : 'warning',
-            htmlSnippet: snippet(el),
-            onInputType: changesContext ? 'context-change' : 'handler',
-          });
-        });
-        // Checkboxes/radios that auto-submit
-        document.querySelectorAll('input[type="checkbox"][onchange], input[type="radio"][onchange]').forEach((el) => {
-          const handler = el.getAttribute('onchange') || '';
-          const changesContext = /submit|window\.open|location|\.href/i.test(handler);
-          if (changesContext) {
-            results.push({
-              element: 'input',
-              issue: 'Input checkbox/radio com onchange que submete — mudança de contexto inesperada',
-              status: 'error',
-              htmlSnippet: snippet(el),
-              onInputType: 'context-change',
-            });
-          }
-        });
-        // Text inputs that submit on change
-        document.querySelectorAll('input[type="text"][onchange], input[type="search"][onchange]').forEach((el) => {
-          const handler = el.getAttribute('onchange') || '';
-          if (/submit|location|\.href/i.test(handler)) {
-            results.push({
-              element: 'input',
-              issue: 'Input de texto com onchange que submete — usuário não espera submissão automática',
-              status: 'error',
-              htmlSnippet: snippet(el),
-              onInputType: 'auto-submit',
-            });
-          }
-        });
-        if (results.length === 0) {
-          results.push({ element: 'page', issue: 'Nenhuma mudança de contexto ao receber entrada — OK.', status: 'approved', htmlSnippet: '', onInputType: 'approved' });
-        }
-        return results;
-      };
-
-      // ===== 9m. analyzeConsistentHelp (WCAG 3.2.6) =====
+      // ===== 9k. analyzeConsistentHelp (WCAG 3.2.6) =====
       const analyzeConsistentHelp = () => {
         const results = [];
         const helpPatterns = /ajuda|help|suporte|support|faq|contato|contact|chat|atendimento|sac/i;
@@ -1509,14 +1431,12 @@ app.post('/analyze', async (req, res) => {
       const keyboardShortcuts = analyzeKeyboardShortcuts();
       const timeLimits = analyzeTimeLimits();
       const movingContent = analyzeMovingContent();
-      const flashing = analyzeFlashing();
+      
       const focusOrder = analyzeFocusOrder();
       const pointerGestures = analyzePointerGestures();
       const pointerCancellation = analyzePointerCancellation();
       const labelInName = analyzeLabelInName();
       const motionActuation = analyzeMotionActuation();
-      const onFocus = analyzeOnFocus();
-      const onInput = analyzeOnInput();
       const consistentHelp = analyzeConsistentHelp();
       const errorIdentification = analyzeErrorIdentification();
       const labelsInstructions = analyzeLabelsInstructions();
@@ -1629,7 +1549,7 @@ app.post('/analyze', async (req, res) => {
         { id: '2.1.4', name: 'Atalhos de Teclado', wcagLevel: 'A', ...countByStatus(keyboardShortcuts) },
         { id: '2.2.1', name: 'Tempo Ajustável', wcagLevel: 'A', ...countByStatus(timeLimits) },
         { id: '2.2.2', name: 'Pausar, Parar, Ocultar', wcagLevel: 'A', ...countByStatus(movingContent) },
-        { id: '2.3.1', name: 'Três Flashes', wcagLevel: 'A', ...countByStatus(flashing) },
+        
         { id: '2.4.3', name: 'Ordem do Foco', wcagLevel: 'A', ...countByStatus(focusOrder) },
         { id: '2.5.1', name: 'Gestos de Acionamento', wcagLevel: 'A', ...countByStatus(pointerGestures) },
         { id: '2.5.2', name: 'Cancelamento de Ponteiro', wcagLevel: 'A', ...countByStatus(pointerCancellation) },
@@ -1639,8 +1559,6 @@ app.post('/analyze', async (req, res) => {
         { id: '2.4.2', name: 'Página com Título', wcagLevel: 'A', ...countByStatus(metaBycriterion['2.4.2']) },
         { id: '2.4.4', name: 'Finalidade do Link', wcagLevel: 'A', ...countByStatus(links) },
         { id: '3.1.1', name: 'Idioma da Página', wcagLevel: 'A', ...countByStatus(metaBycriterion['3.1.1']) },
-        { id: '3.2.1', name: 'Ao Receber Foco', wcagLevel: 'A', ...countByStatus(onFocus) },
-        { id: '3.2.2', name: 'Ao Receber Entrada', wcagLevel: 'A', ...countByStatus(onInput) },
         { id: '3.2.6', name: 'Ajuda Consistente', wcagLevel: 'A', ...countByStatus(consistentHelp) },
         { id: '3.3.1', name: 'Identificação de Erro', wcagLevel: 'A', ...countByStatus(errorIdentification) },
         { id: '3.3.2', name: 'Rótulos ou Instruções', wcagLevel: 'A', ...countByStatus(labelsInstructions) },
@@ -1679,14 +1597,12 @@ app.post('/analyze', async (req, res) => {
         keyboardShortcuts: { ...countByStatus(keyboardShortcuts), items: keyboardShortcuts },
         timeLimits: { ...countByStatus(timeLimits), items: timeLimits },
         movingContent: { ...countByStatus(movingContent), items: movingContent },
-        flashing: { ...countByStatus(flashing), items: flashing },
+        
         focusOrder: { ...countByStatus(focusOrder), items: focusOrder },
         pointerGestures: { ...countByStatus(pointerGestures), items: pointerGestures },
         pointerCancellation: { ...countByStatus(pointerCancellation), items: pointerCancellation },
         labelInName: { ...countByStatus(labelInName), items: labelInName },
         motionActuation: { ...countByStatus(motionActuation), items: motionActuation },
-        onFocus: { ...countByStatus(onFocus), items: onFocus },
-        onInput: { ...countByStatus(onInput), items: onInput },
         consistentHelp: { ...countByStatus(consistentHelp), items: consistentHelp },
         errorIdentification: { ...countByStatus(errorIdentification), items: errorIdentification },
         labelsInstructions: { ...countByStatus(labelsInstructions), items: labelsInstructions },
