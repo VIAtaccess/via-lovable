@@ -629,14 +629,54 @@ app.post('/analyze', async (req, res) => {
       // ===== 9. analyzeKeyboardTrap =====
       const analyzeKeyboardTrap = () => {
         const results = [];
+        // 1. Check onfocus that forces focus back
         document.querySelectorAll('[onfocus]').forEach((el) => {
           const onfocus = el.getAttribute('onfocus') || '';
           if (/\.focus\(\)|return\s+false|event\.preventDefault/i.test(onfocus)) results.push({ element: el.tagName.toLowerCase(), issue: 'onfocus pode forçar foco — possível bloqueio.', status: 'error', htmlSnippet: snippet(el), trapType: 'focus-trap' });
         });
+        // 2. Check onblur that forces focus back
         document.querySelectorAll('[onblur]').forEach((el) => {
           const onblur = el.getAttribute('onblur') || '';
           if (/\.focus\(\)|return\s+false|event\.preventDefault/i.test(onblur)) results.push({ element: el.tagName.toLowerCase(), issue: 'onblur reforça foco — impede saída por teclado.', status: 'error', htmlSnippet: snippet(el), trapType: 'focus-trap' });
         });
+        // 3. Check onkeydown that prevents Tab navigation
+        document.querySelectorAll('[onkeydown]').forEach((el) => {
+          const handler = el.getAttribute('onkeydown') || '';
+          if (/preventDefault|return\s+false/i.test(handler) && /Tab|keyCode\s*===?\s*9/i.test(handler)) {
+            results.push({ element: el.tagName.toLowerCase(), issue: 'onkeydown bloqueia Tab — armadilha de teclado detectada.', status: 'error', htmlSnippet: snippet(el), trapType: 'tab-trap' });
+          }
+        });
+        // 4. Check focusable elements with tabindex that might trap (React pattern)
+        document.querySelectorAll('[tabindex]').forEach((el) => {
+          const props = el.__reactProps$;
+          if (!props) {
+            // Check for React internal props
+            const keys = Object.keys(el);
+            const reactPropsKey = keys.find(k => k.startsWith('__reactProps$'));
+            if (reactPropsKey) {
+              const rProps = el[reactPropsKey];
+              if (rProps && rProps.onKeyDown) {
+                const fnStr = rProps.onKeyDown.toString();
+                if (/preventDefault|stopPropagation/i.test(fnStr) && /Tab|key/i.test(fnStr)) {
+                  results.push({ element: el.tagName.toLowerCase(), issue: 'React onKeyDown pode bloquear Tab — possível armadilha de teclado.', status: 'error', htmlSnippet: snippet(el), trapType: 'react-tab-trap' });
+                }
+              }
+            }
+          }
+        });
+        // 5. Check iframes without title (can trap focus)
+        document.querySelectorAll('iframe').forEach((el) => {
+          const title = el.getAttribute('title')?.trim();
+          const src = el.getAttribute('src') || '';
+          if (!title) {
+            results.push({ element: 'iframe', issue: 'iframe sem title — pode criar armadilha de foco sem contexto para o usuário.', status: 'warning', htmlSnippet: snippet(el), trapType: 'iframe-no-title' });
+          }
+          // Blank or javascript iframes
+          if (src === 'about:blank' || src.startsWith('javascript:') || !src) {
+            results.push({ element: 'iframe', issue: 'iframe com src vazio/about:blank — pode capturar foco sem conteúdo útil.', status: 'warning', htmlSnippet: snippet(el), trapType: 'iframe-blank' });
+          }
+        });
+        // 6. Check dialogs/modals
         document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog').forEach((el) => {
           const hasClose = el.querySelector('button[aria-label*="close" i], button[aria-label*="fechar" i], button[class*="close" i], [data-dismiss]');
           if (!hasClose) results.push({ element: el.tagName.toLowerCase(), issue: 'Modal sem botão de fechar visível.', status: 'warning', htmlSnippet: snippet(el), trapType: 'no-escape' });
@@ -1263,34 +1303,55 @@ app.post('/analyze', async (req, res) => {
         document.querySelectorAll('form').forEach((form) => {
           const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea');
           const hasRequired = form.querySelectorAll('[required], [aria-required="true"]');
-          const hasAriaInvalid = form.querySelectorAll('[aria-invalid]');
-          const hasAriaDescribedby = form.querySelectorAll('[aria-describedby]');
           const hasErrorMsg = form.querySelectorAll('[class*="error"], [class*="invalid"], [role="alert"], [aria-live="polite"], [aria-live="assertive"]');
           
           inputs.forEach((input) => {
             const name = input.getAttribute('name') || input.getAttribute('id') || input.tagName.toLowerCase();
             const isRequired = input.hasAttribute('required') || input.getAttribute('aria-required') === 'true';
             const hasDescribedby = input.hasAttribute('aria-describedby');
+            const hasInvalid = input.getAttribute('aria-invalid');
             const issues = [];
             
+            // Required field without error feedback mechanism
             if (isRequired && !hasDescribedby) {
               issues.push('Campo obrigatório sem aria-describedby para mensagem de erro');
             }
-            if (isRequired && !input.hasAttribute('aria-invalid')) {
+            if (isRequired && !hasInvalid) {
               issues.push('Campo obrigatório sem aria-invalid para indicar estado de erro');
             }
             
+            // Field marked invalid without associated error message
+            if (hasInvalid === 'true' && !hasDescribedby) {
+              issues.push('Campo com aria-invalid="true" mas sem aria-describedby — erro não é descrito');
+            }
+            
             if (issues.length > 0) {
-              results.push({ element: input.tagName.toLowerCase(), issue: issues[0], status: 'warning', htmlSnippet: snippet(input), errorType: 'missing-error-feedback' });
+              results.push({ element: input.tagName.toLowerCase(), issue: issues[0], status: 'error', htmlSnippet: snippet(input), errorType: 'missing-error-feedback' });
             }
           });
 
+          // Form with required fields but no error display mechanism
           if (hasRequired.length > 0 && hasErrorMsg.length === 0) {
-            results.push({ element: 'form', issue: 'Formulário com campos obrigatórios mas sem área de mensagem de erro visível', status: 'warning', htmlSnippet: snippet(form), errorType: 'no-error-container' });
-          } else if (hasRequired.length > 0 && hasErrorMsg.length > 0) {
-            results.push({ element: 'form', issue: 'Formulário com área de erro identificada — OK', status: 'approved', htmlSnippet: snippet(form), errorType: 'has-error-container' });
+            results.push({ element: 'form', issue: 'Formulário com campos obrigatórios mas sem área de mensagem de erro visível', status: 'error', htmlSnippet: snippet(form), errorType: 'no-error-container' });
+          }
+
+          // Form with inputs but NO required and NO aria-invalid — no error identification at all
+          if (inputs.length > 0 && hasRequired.length === 0) {
+            const anyInvalid = form.querySelectorAll('[aria-invalid]');
+            if (anyInvalid.length === 0) {
+              results.push({ element: 'form', issue: 'Formulário sem indicação de campos obrigatórios (required/aria-required) — erros não serão identificados', status: 'warning', htmlSnippet: snippet(form), errorType: 'no-required-fields' });
+            }
           }
         });
+
+        // Check standalone inputs with aria-invalid but no associated error message
+        document.querySelectorAll('input[aria-invalid="true"]:not(form input), select[aria-invalid="true"]:not(form select), textarea[aria-invalid="true"]:not(form textarea)').forEach((input) => {
+          const hasDescribedby = input.hasAttribute('aria-describedby');
+          if (!hasDescribedby) {
+            results.push({ element: input.tagName.toLowerCase(), issue: 'Campo com aria-invalid="true" mas sem aria-describedby — erro não é descrito ao usuário', status: 'error', htmlSnippet: snippet(input), errorType: 'invalid-no-description' });
+          }
+        });
+
         if (results.length === 0) {
           results.push({ element: 'page', issue: 'Nenhum formulário encontrado para análise de erros.', status: 'approved', htmlSnippet: '', errorType: 'no-forms' });
         }
@@ -1330,28 +1391,63 @@ app.post('/analyze', async (req, res) => {
       // ===== 9p. analyzeRedundantEntry (WCAG 3.3.7) =====
       const analyzeRedundantEntry = () => {
         const results = [];
+        
+        // Semantic groups: fields that ask for the same info
+        const SEMANTIC_GROUPS = {
+          email: /email|e-mail|correio/i,
+          phone: /phone|tel|telefone|celular|fone/i,
+          name: /name|nome/i,
+          address: /address|endereco|endereço|logradouro/i,
+          password: /password|senha|pass/i,
+          cpf: /cpf|documento/i,
+          city: /city|cidade/i,
+          state: /state|estado|uf/i,
+          zip: /zip|cep|postal/i,
+        };
+
         document.querySelectorAll('form').forEach((form) => {
           const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
           const names = new Map();
+          const semanticMap = new Map();
+          
           inputs.forEach((input) => {
             const name = (input.getAttribute('name') || '').toLowerCase();
             const type = input.getAttribute('type') || 'text';
             const autocomplete = input.getAttribute('autocomplete');
-            if (name) {
-              if (names.has(name)) {
-                results.push({ element: 'input', issue: `Campo "${name}" aparece mais de uma vez no mesmo formulário — possível entrada redundante`, status: 'warning', htmlSnippet: snippet(input), redundantType: 'duplicate-name' });
+            const label = input.closest('label')?.textContent?.trim()?.toLowerCase() || '';
+            const placeholder = (input.getAttribute('placeholder') || '').toLowerCase();
+            const identifier = name || label || placeholder;
+            
+            if (!identifier) return;
+            
+            // Check exact duplicate names
+            if (name && names.has(name)) {
+              results.push({ element: 'input', issue: `Campo "${name}" aparece mais de uma vez no mesmo formulário — entrada redundante`, status: 'error', htmlSnippet: snippet(input), redundantType: 'duplicate-name' });
+            }
+            if (name) names.set(name, true);
+            
+            // Check for confirm/repeat fields
+            if (/confirm|confirma|repeat|repet|verify|verific|novamente|again|re-?enter|redigit/i.test(identifier)) {
+              results.push({ element: 'input', issue: `Campo "${identifier}" pede confirmação redundante — considere usar autocomplete`, status: 'error', htmlSnippet: snippet(input), redundantType: 'confirm-field' });
+            }
+            
+            // Check semantic similarity (e.g., email1 + email2)
+            for (const [group, regex] of Object.entries(SEMANTIC_GROUPS)) {
+              if (regex.test(identifier)) {
+                if (semanticMap.has(group)) {
+                  results.push({ element: 'input', issue: `Múltiplos campos de "${group}" no mesmo formulário — possível entrada redundante (${semanticMap.get(group)} e ${identifier})`, status: 'error', htmlSnippet: snippet(input), redundantType: 'semantic-duplicate' });
+                } else {
+                  semanticMap.set(group, identifier);
+                }
+                break;
               }
-              names.set(name, true);
             }
-            // Check for confirm fields (common redundancy)
-            if (/confirm|confirma|repeat|repet|verify|verific/i.test(name)) {
-              results.push({ element: 'input', issue: `Campo "${name}" parece pedir confirmação redundante — considere usar autocomplete`, status: 'warning', htmlSnippet: snippet(input), redundantType: 'confirm-field' });
-            }
+            
             // Check for autocomplete support
             if (['text', 'email', 'tel', 'url'].includes(type) && !autocomplete) {
-              const suggestedAutocomplete = /email/i.test(name) ? 'email' : /phone|tel/i.test(name) ? 'tel' : /name|nome/i.test(name) ? 'name' : null;
+              const suggestedAutocomplete = /email/i.test(identifier) ? 'email' : /phone|tel/i.test(identifier) ? 'tel' : /name|nome/i.test(identifier) ? 'name' : null;
               if (suggestedAutocomplete) {
-                results.push({ element: 'input', issue: `Campo "${name}" sem autocomplete="${suggestedAutocomplete}" — autocomplete evita entrada redundante`, status: 'warning', htmlSnippet: snippet(input), redundantType: 'no-autocomplete' });
+                results.push({ element: 'input', issue: `Campo "${identifier}" sem autocomplete="${suggestedAutocomplete}" — autocomplete evita entrada redundante`, status: 'warning', htmlSnippet: snippet(input), redundantType: 'no-autocomplete' });
               }
             }
           });
@@ -1458,14 +1554,14 @@ app.post('/analyze', async (req, res) => {
         }
         // Title
         const titleText = document.title?.trim() || '';
-        const GENERIC_TITLES = ['untitled', 'home', 'document', 'page', 'index', 'welcome', 'título', 'sem título'];
+        const GENERIC_TITLES = ['untitled', 'home', 'document', 'page', 'index', 'welcome', 'título', 'sem título', 'new tab', 'nova aba', 'página inicial', 'teste', 'test'];
         if (!titleText) results.push({ type: 'title', criterionId: '2.4.2', element: '<title>', status: 'error', issues: ['Página sem <title>'], detail: '<title> ausente ou vazio', htmlSnippet: '(ausente)' });
         else {
           const isGeneric = GENERIC_TITLES.some(g => titleText.toLowerCase() === g);
           const issues = [];
-          if (isGeneric) issues.push(`Título genérico: "${titleText}"`);
+          if (isGeneric) issues.push(`Título genérico: "${titleText}" — deve descrever o conteúdo específico da página`);
           if (titleText.length < 3) issues.push(`Título muito curto: "${titleText}"`);
-          results.push({ type: 'title', criterionId: '2.4.2', element: '<title>', status: issues.length > 0 ? 'warning' : 'approved', issues, detail: `Título: "${titleText}"`, htmlSnippet: `<title>${titleText}</title>` });
+          results.push({ type: 'title', criterionId: '2.4.2', element: '<title>', status: issues.length > 0 ? 'error' : 'approved', issues, detail: `Título: "${titleText}"`, htmlSnippet: `<title>${titleText}</title>` });
         }
         // Skip nav
         const skipSelectors = 'a[href="#main"], a[href="#main-content"], a[href="#content"], a[href="#conteudo"], a[href="#skip"]';
@@ -1571,7 +1667,16 @@ app.post('/analyze', async (req, res) => {
           }
         });
         if (results.length === 0) {
-          results.push({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: ['Nenhuma região de status encontrada — considere adicionar role="status" para mensagens dinâmicas'], status: 'warning', htmlSnippet: '' });
+          // Check if page has any dynamic content indicators
+          const hasForms = document.querySelectorAll('form').length > 0;
+          const hasButtons = document.querySelectorAll('button, [role="button"]').length > 0;
+          const hasDynamicContent = hasForms || hasButtons || document.querySelectorAll('[class*="counter"], [class*="cart"], [class*="count"], [id*="status"], [id*="count"]').length > 0;
+          if (hasDynamicContent) {
+            results.push({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: ['Página com conteúdo interativo mas sem regiões aria-live ou role="status" — mudanças dinâmicas não serão anunciadas'], status: 'error', htmlSnippet: '' });
+          } else {
+            results.push({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: [], status: 'approved', htmlSnippet: '' });
+          }
+        }
         }
         return results;
       };
