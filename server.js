@@ -682,6 +682,15 @@ app.post('/analyze', async (req, res) => {
           if (!hasClose) results.push({ element: el.tagName.toLowerCase(), issue: 'Modal sem botão de fechar visível.', status: 'warning', htmlSnippet: snippet(el), trapType: 'no-escape' });
           else results.push({ element: el.tagName.toLowerCase(), issue: 'Modal com mecanismo de fechar — OK.', status: 'approved', htmlSnippet: snippet(el), trapType: 'approved' });
         });
+        // 7. Check elements with onmousedown/ontouchstart but no keyboard equivalent (potential trap for keyboard users)
+        document.querySelectorAll('[onmousedown], [ontouchstart]').forEach((el) => {
+          const tag = el.tagName.toLowerCase();
+          const hasKeyHandler = el.hasAttribute('onkeydown') || el.hasAttribute('onkeyup') || el.hasAttribute('onkeypress');
+          const isNativeInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag);
+          if (!hasKeyHandler && !isNativeInteractive) {
+            results.push({ element: tag, issue: `Elemento com onmousedown/ontouchstart mas sem handler de teclado — pode bloquear interação por teclado.`, status: 'warning', htmlSnippet: snippet(el), trapType: 'mouse-only' });
+          }
+        });
         if (results.length === 0) results.push({ element: 'page', issue: 'Nenhum bloqueio de teclado detectado.', status: 'approved', htmlSnippet: '', trapType: 'approved' });
         return results;
       };
@@ -1300,10 +1309,11 @@ app.post('/analyze', async (req, res) => {
       // ===== 9n. analyzeErrorIdentification (WCAG 3.3.1) =====
       const analyzeErrorIdentification = () => {
         const results = [];
-        document.querySelectorAll('form').forEach((form) => {
-          const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea');
-          const hasRequired = form.querySelectorAll('[required], [aria-required="true"]');
-          const hasErrorMsg = form.querySelectorAll('[class*="error"], [class*="invalid"], [role="alert"], [aria-live="polite"], [aria-live="assertive"]');
+        
+        // Helper to analyze a set of inputs (works for both inside and outside forms)
+        const analyzeInputs = (inputs, container) => {
+          const hasRequired = container.querySelectorAll('[required], [aria-required="true"]');
+          const hasErrorMsg = container.querySelectorAll('[class*="error"], [class*="invalid"], [role="alert"], [aria-live="polite"], [aria-live="assertive"]');
           
           inputs.forEach((input) => {
             const name = input.getAttribute('name') || input.getAttribute('id') || input.tagName.toLowerCase();
@@ -1312,15 +1322,12 @@ app.post('/analyze', async (req, res) => {
             const hasInvalid = input.getAttribute('aria-invalid');
             const issues = [];
             
-            // Required field without error feedback mechanism
             if (isRequired && !hasDescribedby) {
               issues.push('Campo obrigatório sem aria-describedby para mensagem de erro');
             }
             if (isRequired && !hasInvalid) {
               issues.push('Campo obrigatório sem aria-invalid para indicar estado de erro');
             }
-            
-            // Field marked invalid without associated error message
             if (hasInvalid === 'true' && !hasDescribedby) {
               issues.push('Campo com aria-invalid="true" mas sem aria-describedby — erro não é descrito');
             }
@@ -1330,22 +1337,53 @@ app.post('/analyze', async (req, res) => {
             }
           });
 
-          // Form with required fields but no error display mechanism
           if (hasRequired.length > 0 && hasErrorMsg.length === 0) {
-            results.push({ element: 'form', issue: 'Formulário com campos obrigatórios mas sem área de mensagem de erro visível', status: 'error', htmlSnippet: snippet(form), errorType: 'no-error-container' });
+            results.push({ element: container.tagName.toLowerCase(), issue: 'Formulário com campos obrigatórios mas sem área de mensagem de erro visível', status: 'error', htmlSnippet: snippet(container), errorType: 'no-error-container' });
           }
 
-          // Form with inputs but NO required and NO aria-invalid — no error identification at all
           if (inputs.length > 0 && hasRequired.length === 0) {
-            const anyInvalid = form.querySelectorAll('[aria-invalid]');
+            const anyInvalid = container.querySelectorAll('[aria-invalid]');
             if (anyInvalid.length === 0) {
-              results.push({ element: 'form', issue: 'Formulário sem indicação de campos obrigatórios (required/aria-required) — erros não serão identificados', status: 'warning', htmlSnippet: snippet(form), errorType: 'no-required-fields' });
+              results.push({ element: container.tagName.toLowerCase(), issue: 'Formulário sem indicação de campos obrigatórios (required/aria-required) — erros não serão identificados', status: 'warning', htmlSnippet: snippet(container), errorType: 'no-required-fields' });
             }
           }
+        };
+        
+        // Check inputs inside forms
+        document.querySelectorAll('form').forEach((form) => {
+          const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea');
+          analyzeInputs(inputs, form);
         });
 
-        // Check standalone inputs with aria-invalid but no associated error message
-        document.querySelectorAll('input[aria-invalid="true"]:not(form input), select[aria-invalid="true"]:not(form select), textarea[aria-invalid="true"]:not(form textarea)').forEach((input) => {
+        // Check standalone inputs NOT inside any form
+        const standaloneInputs = document.querySelectorAll('input:not(form input):not([type="hidden"]):not([type="submit"]):not([type="button"]), select:not(form select), textarea:not(form textarea)');
+        if (standaloneInputs.length > 0) {
+          standaloneInputs.forEach((input) => {
+            if (input.closest('form')) return; // skip if actually inside form
+            const hasDescribedby = input.hasAttribute('aria-describedby');
+            const hasInvalid = input.getAttribute('aria-invalid');
+            const isRequired = input.hasAttribute('required') || input.getAttribute('aria-required') === 'true';
+            const issues = [];
+            
+            if (isRequired && !hasDescribedby) {
+              issues.push('Campo obrigatório fora de formulário sem aria-describedby');
+            }
+            if (isRequired && !hasInvalid) {
+              issues.push('Campo obrigatório fora de formulário sem aria-invalid');
+            }
+            if (!isRequired && !hasInvalid) {
+              issues.push('Campo fora de <form> sem validação de erro acessível (sem required nem aria-invalid)');
+            }
+            
+            if (issues.length > 0) {
+              results.push({ element: input.tagName.toLowerCase(), issue: issues[0], status: issues[0].includes('fora de <form>') ? 'warning' : 'error', htmlSnippet: snippet(input), errorType: 'standalone-input' });
+            }
+          });
+        }
+
+        // Check standalone aria-invalid without description
+        document.querySelectorAll('input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"]').forEach((input) => {
+          if (input.closest('form')) return; // handled above
           const hasDescribedby = input.hasAttribute('aria-describedby');
           if (!hasDescribedby) {
             results.push({ element: input.tagName.toLowerCase(), issue: 'Campo com aria-invalid="true" mas sem aria-describedby — erro não é descrito ao usuário', status: 'error', htmlSnippet: snippet(input), errorType: 'invalid-no-description' });
@@ -1353,7 +1391,13 @@ app.post('/analyze', async (req, res) => {
         });
 
         if (results.length === 0) {
-          results.push({ element: 'page', issue: 'Nenhum formulário encontrado para análise de erros.', status: 'approved', htmlSnippet: '', errorType: 'no-forms' });
+          // Check if page has ANY inputs at all
+          const allInputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea');
+          if (allInputs.length > 0) {
+            results.push({ element: 'page', issue: `Página tem ${allInputs.length} campos mas nenhum mecanismo de identificação de erros (required, aria-invalid, aria-describedby)`, status: 'error', htmlSnippet: '', errorType: 'no-error-mechanism' });
+          } else {
+            results.push({ element: 'page', issue: 'Nenhum campo de formulário encontrado.', status: 'approved', htmlSnippet: '', errorType: 'no-forms' });
+          }
         }
         return results;
       };
@@ -1392,7 +1436,6 @@ app.post('/analyze', async (req, res) => {
       const analyzeRedundantEntry = () => {
         const results = [];
         
-        // Semantic groups: fields that ask for the same info
         const SEMANTIC_GROUPS = {
           email: /email|e-mail|correio/i,
           phone: /phone|tel|telefone|celular|fone/i,
@@ -1405,12 +1448,16 @@ app.post('/analyze', async (req, res) => {
           zip: /zip|cep|postal/i,
         };
 
-        document.querySelectorAll('form').forEach((form) => {
-          const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
+        // Analyze inputs within a container (form or page)
+        const analyzeContainer = (container, containerLabel) => {
+          const inputs = container.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
           const names = new Map();
           const semanticMap = new Map();
           
           inputs.forEach((input) => {
+            // Skip if inside a form (when analyzing page-level)
+            if (containerLabel === 'page' && input.closest('form')) return;
+            
             const name = (input.getAttribute('name') || '').toLowerCase();
             const type = input.getAttribute('type') || 'text';
             const autocomplete = input.getAttribute('autocomplete');
@@ -1420,22 +1467,19 @@ app.post('/analyze', async (req, res) => {
             
             if (!identifier) return;
             
-            // Check exact duplicate names
             if (name && names.has(name)) {
-              results.push({ element: 'input', issue: `Campo "${name}" aparece mais de uma vez no mesmo formulário — entrada redundante`, status: 'error', htmlSnippet: snippet(input), redundantType: 'duplicate-name' });
+              results.push({ element: 'input', issue: `Campo "${name}" aparece mais de uma vez — entrada redundante`, status: 'error', htmlSnippet: snippet(input), redundantType: 'duplicate-name' });
             }
             if (name) names.set(name, true);
             
-            // Check for confirm/repeat fields
             if (/confirm|confirma|repeat|repet|verify|verific|novamente|again|re-?enter|redigit/i.test(identifier)) {
               results.push({ element: 'input', issue: `Campo "${identifier}" pede confirmação redundante — considere usar autocomplete`, status: 'error', htmlSnippet: snippet(input), redundantType: 'confirm-field' });
             }
             
-            // Check semantic similarity (e.g., email1 + email2)
             for (const [group, regex] of Object.entries(SEMANTIC_GROUPS)) {
               if (regex.test(identifier)) {
                 if (semanticMap.has(group)) {
-                  results.push({ element: 'input', issue: `Múltiplos campos de "${group}" no mesmo formulário — possível entrada redundante (${semanticMap.get(group)} e ${identifier})`, status: 'error', htmlSnippet: snippet(input), redundantType: 'semantic-duplicate' });
+                  results.push({ element: 'input', issue: `Múltiplos campos de "${group}" — possível entrada redundante (${semanticMap.get(group)} e ${identifier})`, status: 'error', htmlSnippet: snippet(input), redundantType: 'semantic-duplicate' });
                 } else {
                   semanticMap.set(group, identifier);
                 }
@@ -1443,7 +1487,6 @@ app.post('/analyze', async (req, res) => {
               }
             }
             
-            // Check for autocomplete support
             if (['text', 'email', 'tel', 'url'].includes(type) && !autocomplete) {
               const suggestedAutocomplete = /email/i.test(identifier) ? 'email' : /phone|tel/i.test(identifier) ? 'tel' : /name|nome/i.test(identifier) ? 'name' : null;
               if (suggestedAutocomplete) {
@@ -1451,9 +1494,28 @@ app.post('/analyze', async (req, res) => {
               }
             }
           });
+        };
+
+        // Check inside forms
+        document.querySelectorAll('form').forEach((form) => {
+          analyzeContainer(form, 'form');
         });
+        
+        // Check standalone inputs NOT in forms (page-level)
+        analyzeContainer(document, 'page');
+
         if (results.length === 0) {
-          results.push({ element: 'page', issue: 'Nenhuma entrada redundante detectada — OK.', status: 'approved', htmlSnippet: '', redundantType: 'approved' });
+          // Check if page has inputs that could benefit from autocomplete
+          const allInputs = document.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="url"]');
+          let missingAutocomplete = 0;
+          allInputs.forEach((input) => {
+            if (!input.getAttribute('autocomplete')) missingAutocomplete++;
+          });
+          if (missingAutocomplete > 0) {
+            results.push({ element: 'page', issue: `${missingAutocomplete} campo(s) sem atributo autocomplete — autocomplete reduz entrada redundante entre páginas`, status: 'warning', htmlSnippet: '', redundantType: 'missing-autocomplete-global' });
+          } else {
+            results.push({ element: 'page', issue: 'Nenhuma entrada redundante detectada — OK.', status: 'approved', htmlSnippet: '', redundantType: 'approved' });
+          }
         }
         return results;
       };
@@ -1554,13 +1616,18 @@ app.post('/analyze', async (req, res) => {
         }
         // Title
         const titleText = document.title?.trim() || '';
-        const GENERIC_TITLES = ['untitled', 'home', 'document', 'page', 'index', 'welcome', 'título', 'sem título', 'new tab', 'nova aba', 'página inicial', 'teste', 'test'];
+        const GENERIC_TITLES = ['untitled', 'home', 'document', 'page', 'index', 'welcome', 'título', 'sem título', 'new tab', 'nova aba', 'página inicial', 'teste', 'test', 'loading', 'carregando', 'app'];
+        // Titles that look like status/notification messages rather than page descriptions
+        const STATUS_TITLE_PATTERNS = /^(atualizado|updated|salvo|saved|enviado|sent|erro|error|sucesso|success|loading|carregando|aguarde|wait|ok|done|pronto|feito|concluído|completed|falha|fail)/i;
         if (!titleText) results.push({ type: 'title', criterionId: '2.4.2', element: '<title>', status: 'error', issues: ['Página sem <title>'], detail: '<title> ausente ou vazio', htmlSnippet: '(ausente)' });
         else {
           const isGeneric = GENERIC_TITLES.some(g => titleText.toLowerCase() === g);
+          const isStatusMessage = STATUS_TITLE_PATTERNS.test(titleText);
           const issues = [];
           if (isGeneric) issues.push(`Título genérico: "${titleText}" — deve descrever o conteúdo específico da página`);
+          if (isStatusMessage) issues.push(`Título parece mensagem de status: "${titleText}" — deve descrever o conteúdo da página, não um estado temporário`);
           if (titleText.length < 3) issues.push(`Título muito curto: "${titleText}"`);
+          if (!titleText.includes(' ') && titleText.length < 10) issues.push(`Título muito simples: "${titleText}" — deve ser descritivo`);
           results.push({ type: 'title', criterionId: '2.4.2', element: '<title>', status: issues.length > 0 ? 'error' : 'approved', issues, detail: `Título: "${titleText}"`, htmlSnippet: `<title>${titleText}</title>` });
         }
         // Skip nav
@@ -1666,8 +1733,17 @@ app.post('/analyze', async (req, res) => {
             results.push({ element: el.tagName.toLowerCase(), role: '(sem role)', text: (el.textContent || '').trim().slice(0, 200), ariaLive: '(ausente)', issues: ['Notificação/toast sem role ou aria-live — invisível para leitores de tela'], status: 'error', htmlSnippet: snippet(el, 400) });
           }
         });
+        // Even if we found some aria-live regions, check if forms lack associated status messages
+        const allForms = document.querySelectorAll('form');
+        allForms.forEach((form) => {
+          const hasLiveInForm = form.querySelector('[aria-live], [role="alert"], [role="status"]');
+          const hasInputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]), select, textarea').length;
+          if (hasInputs > 0 && !hasLiveInForm) {
+            results.push({ element: 'form', role: '(sem role)', text: '', ariaLive: '(ausente)', issues: ['Formulário sem região aria-live/role="alert" — erros de validação não serão anunciados por leitores de tela'], status: 'error', htmlSnippet: snippet(form, 400) });
+          }
+        });
+        
         if (results.length === 0) {
-          // Check if page has any dynamic content indicators
           const hasForms = document.querySelectorAll('form').length > 0;
           const hasButtons = document.querySelectorAll('button, [role="button"]').length > 0;
           const hasDynamicContent = hasForms || hasButtons || document.querySelectorAll('[class*="counter"], [class*="cart"], [class*="count"], [id*="status"], [id*="count"]').length > 0;
