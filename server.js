@@ -1365,37 +1365,61 @@ app.post('/analyze', async (req, res) => {
       // ===== 9k. analyzeConsistentHelp (WCAG 3.2.6) =====
       const analyzeConsistentHelp = () => {
         const results = [];
+        const seen = new Set();
+        const addR = (r) => { const k = r.helpType + ':' + (r.htmlSnippet || '').slice(0, 60); if (seen.has(k)) return; seen.add(k); results.push(r); };
         const helpPatterns = /ajuda|help|suporte|support|faq|contato|contact|chat|atendimento|sac/i;
-        const helpLinks = document.querySelectorAll('a[href], button');
-        let foundHelp = false;
-        helpLinks.forEach((el) => {
+        
+        // Check if help links are in consistent locations (header, footer, nav)
+        const consistentContainers = document.querySelectorAll('header, footer, nav, [role="banner"], [role="contentinfo"], [role="navigation"]');
+        const bodyHelpLinks = [];
+        const consistentHelpLinks = [];
+        
+        document.querySelectorAll('a[href], button').forEach((el) => {
           const text = (el.textContent || '').trim();
           const ariaLabel = el.getAttribute('aria-label') || '';
-          if (helpPatterns.test(text) || helpPatterns.test(ariaLabel)) {
-            foundHelp = true;
-            results.push({
-              element: el.tagName.toLowerCase(),
-              issue: `Link/botão de ajuda "${text.slice(0, 40)}" encontrado — verifique se aparece consistentemente em todas as páginas`,
-              status: 'approved',
-              htmlSnippet: snippet(el),
-              helpType: 'help-link',
-            });
+          if (!helpPatterns.test(text) && !helpPatterns.test(ariaLabel)) return;
+          
+          // Check if this element is inside a consistent container
+          let inConsistentLocation = false;
+          for (const container of consistentContainers) {
+            if (container.contains(el)) { inConsistentLocation = true; break; }
+          }
+          
+          if (inConsistentLocation) {
+            consistentHelpLinks.push(el);
+            addR({ element: el.tagName.toLowerCase(), issue: `Link de ajuda "${text.slice(0, 40)}" em local consistente (header/footer/nav) — OK.`, status: 'approved', htmlSnippet: snippet(el), helpType: 'consistent-help' });
+          } else {
+            bodyHelpLinks.push(el);
+            addR({ element: el.tagName.toLowerCase(), issue: `Link de ajuda "${text.slice(0, 40)}" encontrado apenas no corpo da página — não está em header, footer ou nav. Deve aparecer em local fixo e consistente em todas as páginas.`, status: 'warning', htmlSnippet: snippet(el), helpType: 'inconsistent-location' });
           }
         });
+
         // Check for chat widgets
+        let chatFound = false;
         document.querySelectorAll('[class*="chat"], [id*="chat"], [class*="intercom"], [class*="zendesk"], [class*="tawk"], [class*="crisp"], [class*="drift"]').forEach((el) => {
-          if (!foundHelp) foundHelp = true;
-          results.push({
-            element: el.tagName.toLowerCase(),
-            issue: 'Widget de chat/suporte detectado — verifique se aparece em todas as páginas',
-            status: 'approved',
-            htmlSnippet: snippet(el),
-            helpType: 'chat-widget',
-          });
+          chatFound = true;
+          addR({ element: el.tagName.toLowerCase(), issue: 'Widget de chat/suporte detectado — verifique se aparece em todas as páginas.', status: 'approved', htmlSnippet: snippet(el), helpType: 'chat-widget' });
         });
-        if (!foundHelp) {
-          results.push({ element: 'page', issue: 'Nenhum link de ajuda/contato/suporte encontrado na página', status: 'error', htmlSnippet: '', helpType: 'missing' });
+
+        // Validate: help links should exist AND be in consistent locations
+        if (consistentHelpLinks.length === 0 && bodyHelpLinks.length === 0 && !chatFound) {
+          addR({ element: 'page', issue: 'Nenhum link de ajuda, contato ou suporte encontrado na página — adicione links de ajuda em local consistente (header, footer ou nav).', status: 'error', htmlSnippet: '', helpType: 'missing' });
+        } else if (consistentHelpLinks.length === 0 && !chatFound) {
+          // Has help links but NONE in consistent locations
+          addR({ element: 'page', issue: 'Links de ajuda existem mas nenhum está em local consistente (header/footer/nav) — devem ser posicionados de forma previsível em todas as páginas.', status: 'warning', htmlSnippet: '', helpType: 'no-consistent-location' });
         }
+
+        // Check for accessibility statement / help page link
+        const a11yPatterns = /acessibilidade|accessibility|declaração|statement|mapa.do.site|sitemap/i;
+        let hasA11yLink = false;
+        document.querySelectorAll('a[href]').forEach((el) => {
+          const text = (el.textContent || '').trim();
+          if (a11yPatterns.test(text)) hasA11yLink = true;
+        });
+        if (!hasA11yLink) {
+          addR({ element: 'page', issue: 'Nenhum link de acessibilidade/declaração de acessibilidade encontrado — recomendado incluir link para política de acessibilidade.', status: 'warning', htmlSnippet: '', helpType: 'no-a11y-statement' });
+        }
+
         return results;
       };
 
