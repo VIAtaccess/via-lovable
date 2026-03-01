@@ -567,7 +567,7 @@ app.post('/analyze', async (req, res) => {
           const text = el.textContent?.trim() || el.getAttribute('aria-label')?.trim() || '(link)';
           addResult({ element: 'a', issue: `Link "${text.slice(0, 60)}" — acessível por teclado.`, status: 'approved', htmlSnippet: snippet(el, 300), keyboardType: 'approved' });
         });
-        // Click handlers without keyboard
+        // Click handlers without keyboard (inline attributes)
         document.querySelectorAll('[onclick], [onmousedown], [onmouseup]').forEach((el) => {
           const tag = el.tagName.toLowerCase();
           if (['a', 'button', 'input', 'select', 'textarea', 'summary'].includes(tag)) return;
@@ -575,6 +575,35 @@ app.post('/analyze', async (req, res) => {
           const hasRole = el.hasAttribute('role');
           if (!hasTabindex && !hasRole) addResult({ element: tag, issue: `<${tag}> com onclick mas sem tabindex/role — não focável.`, status: 'error', htmlSnippet: snippet(el), keyboardType: 'non-focusable-interactive' });
         });
+
+        // REACT/SPA DETECTION: Check for elements with cursor:pointer computed style that are not natively focusable
+        const nonInteractiveTags = ['div', 'span', 'li', 'td', 'tr', 'p', 'section', 'article', 'header', 'footer', 'aside', 'figure', 'figcaption', 'label'];
+        document.querySelectorAll(nonInteractiveTags.join(',')).forEach((el) => {
+          try {
+            const computed = window.getComputedStyle(el);
+            const cursor = computed.cursor;
+            if (cursor !== 'pointer') return;
+            const tag = el.tagName.toLowerCase();
+            // Skip if it has proper keyboard accessibility
+            const hasTabindex = el.hasAttribute('tabindex');
+            const hasRole = el.hasAttribute('role');
+            const isNativelyFocusable = el.tagName === 'LABEL' && el.querySelector('input, select, textarea');
+            if (hasTabindex || hasRole || isNativelyFocusable) return;
+            // Skip tiny/invisible elements
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 5 || rect.height < 5) return;
+            // Skip if it wraps a button/link (the child handles interaction)
+            if (el.querySelector('a[href], button, input[type="button"], input[type="submit"]')) return;
+            // Check for React event listeners via __reactProps or __reactFiber
+            const hasReactEvents = Object.keys(el).some(k => k.startsWith('__reactProps') || k.startsWith('__reactFiber') || k.startsWith('__reactEvents'));
+            const hasClickListener = hasReactEvents || el.getAttribute('onclick');
+            if (hasClickListener || cursor === 'pointer') {
+              const text = (el.textContent || '').trim().slice(0, 60);
+              addResult({ element: tag, issue: `<${tag}> com cursor:pointer "${text}" — interativo mas sem tabindex/role, inacessível por teclado.`, status: 'error', htmlSnippet: snippet(el, 300), keyboardType: 'non-focusable-interactive' });
+            }
+          } catch(e) {}
+        });
+
         // Roles without tabindex
         document.querySelectorAll('[role="button"], [role="link"], [role="tab"], [role="switch"], [role="checkbox"], [role="radio"]').forEach((el) => {
           const tag = el.tagName.toLowerCase();
@@ -977,7 +1006,7 @@ app.post('/analyze', async (req, res) => {
       const analyzePointerGestures = () => {
         const results = [];
 
-        // 1. Check for touch/gesture event handlers
+        // 1. Check for touch/gesture event handlers (inline)
         document.querySelectorAll('[ontouchstart], [ontouchmove], [ontouchend], [ongesturestart], [ongesturechange], [ongestureend]').forEach((el) => {
           const hasClick = el.hasAttribute('onclick') || el.tagName === 'BUTTON' || el.tagName === 'A';
           results.push({
@@ -1000,7 +1029,20 @@ app.post('/analyze', async (req, res) => {
           });
         });
 
-        // 3. Check for pinch/zoom custom handlers in scripts
+        // 3. REACT/SPA: Detect swipe/gesture libraries via data attributes and classes
+        document.querySelectorAll('[data-swipeable], [class*="swipe"], [class*="gesture"], [class*="pinch"], [class*="drag"]').forEach((el) => {
+          const tag = el.tagName.toLowerCase();
+          if (['a', 'button', 'input'].includes(tag)) return;
+          results.push({
+            element: tag,
+            issue: 'Elemento com classe/atributo de gesto complexo — verifique se há alternativa de clique simples',
+            status: 'warning',
+            htmlSnippet: snippet(el),
+            gestureType: 'complex-gesture',
+          });
+        });
+
+        // 4. Check for pinch/zoom custom handlers in scripts
         document.querySelectorAll('script:not([src])').forEach((el) => {
           const code = el.textContent || '';
           if (/pinch|gesture|swipe|pan[A-Z]|hammer\.js|touchmove.*scale/i.test(code)) {
@@ -1014,7 +1056,7 @@ app.post('/analyze', async (req, res) => {
           }
         });
 
-        // 4. Check maps/canvas that commonly require gestures
+        // 5. Check maps/canvas that commonly require gestures
         document.querySelectorAll('canvas, [class*="map"], [id*="map"], [class*="leaflet"], [class*="mapbox"], [class*="google-map"]').forEach((el) => {
           results.push({
             element: el.tagName.toLowerCase(),
@@ -1058,6 +1100,25 @@ app.post('/analyze', async (req, res) => {
               pointerType: 'touchstart',
             });
           }
+        });
+
+        // REACT/SPA: Detect elements with onMouseDown React prop via __reactProps
+        const nonInteractiveTags = ['div', 'span', 'li', 'td', 'section', 'article'];
+        document.querySelectorAll(nonInteractiveTags.join(',')).forEach((el) => {
+          try {
+            const reactPropsKey = Object.keys(el).find(k => k.startsWith('__reactProps'));
+            if (!reactPropsKey) return;
+            const reactProps = el[reactPropsKey];
+            if (reactProps && reactProps.onMouseDown && !reactProps.onClick) {
+              results.push({
+                element: el.tagName.toLowerCase(),
+                issue: 'Elemento React com onMouseDown sem onClick — ação ao pressionar, sem cancelamento',
+                status: 'warning',
+                htmlSnippet: snippet(el, 300),
+                pointerType: 'react-mousedown',
+              });
+            }
+          } catch(e) {}
         });
 
         // Check scripts for mousedown-only patterns
@@ -1191,7 +1252,7 @@ app.post('/analyze', async (req, res) => {
           });
         });
         if (!foundHelp) {
-          results.push({ element: 'page', issue: 'Nenhum link de ajuda/contato/suporte encontrado na página', status: 'warning', htmlSnippet: '', helpType: 'missing' });
+          results.push({ element: 'page', issue: 'Nenhum link de ajuda/contato/suporte encontrado na página', status: 'error', htmlSnippet: '', helpType: 'missing' });
         }
         return results;
       };
