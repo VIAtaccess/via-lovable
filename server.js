@@ -728,9 +728,7 @@ app.post('/analyze', async (req, res) => {
         document.querySelectorAll('[role="combobox"], [role="listbox"], [role="menu"], [role="tree"], [role="treegrid"]').forEach((el) => {
           const role = el.getAttribute('role');
           const ariaExpanded = el.getAttribute('aria-expanded');
-          // If it can expand, check that there's an escape mechanism
           if (ariaExpanded !== null) {
-            // Check parent or self for key handler
             const hasKeyHandler = el.hasAttribute('onkeydown') || el.hasAttribute('onkeyup');
             const keys = Object.keys(el);
             const reactPropsKey = keys.find(k => k.startsWith('__reactProps$'));
@@ -740,6 +738,51 @@ app.post('/analyze', async (req, res) => {
             }
           }
         });
+
+        // 12. Check custom interactive elements (cursor:pointer, onClick via React) that are not natively focusable
+        // These can create implicit traps: user tabs to them but may not be able to interact or leave properly
+        const allEls = document.querySelectorAll('div, span, li, section, article, label');
+        allEls.forEach((el) => {
+          const tag = el.tagName.toLowerCase();
+          const style = window.getComputedStyle(el);
+          const isClickable = style.cursor === 'pointer';
+          const tabIdx = el.getAttribute('tabindex');
+          const role = el.getAttribute('role');
+          const isNativeInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag);
+          
+          if (isClickable && !isNativeInteractive && tabIdx === null && !role) {
+            // Check if it has a React click handler
+            const keys = Object.keys(el);
+            const reactPropsKey = keys.find(k => k.startsWith('__reactProps$'));
+            const hasReactClick = reactPropsKey && el[reactPropsKey] && (el[reactPropsKey].onClick || el[reactPropsKey].onMouseDown);
+            if (hasReactClick) {
+              addResult({ element: tag, issue: `Elemento <${tag}> com cursor:pointer e onClick mas sem tabindex ou role — não acessível via teclado, pode confundir navegação por Tab.`, status: 'warning', htmlSnippet: snippet(el), trapType: 'non-focusable-interactive' });
+            }
+          }
+        });
+
+        // 13. Check tabindex="-1" on containers (non-interactive) — can receive programmatic focus but user cannot tab away naturally
+        document.querySelectorAll('[tabindex="-1"]').forEach((el) => {
+          const tag = el.tagName.toLowerCase();
+          if (['a', 'button', 'input', 'select', 'textarea', 'summary'].includes(tag)) return;
+          const role = el.getAttribute('role');
+          // Skip landmark/dialog roles
+          if (role && ['dialog', 'alertdialog', 'main', 'navigation', 'banner', 'complementary', 'contentinfo', 'region'].includes(role)) return;
+          const focusableChildren = el.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]');
+          if (focusableChildren.length > 2) {
+            addResult({ element: tag, issue: `Container <${tag}> com tabindex="-1" e ${focusableChildren.length} elementos focáveis internos — foco programático pode prender o usuário dentro do container.`, status: 'warning', htmlSnippet: snippet(el), trapType: 'programmatic-focus-trap' });
+          }
+        });
+
+        // 14. SPA focus management: check if there's a skip-to-content or focus management for route changes
+        const hasSkipLink = document.querySelector('a[href="#main-content"], a[href="#content"], a[href="#main"], [class*="skip" i]');
+        const mainContent = document.querySelector('main, [role="main"], #main-content, #content');
+        if (!hasSkipLink && mainContent) {
+          const mainTabindex = mainContent.getAttribute('tabindex');
+          if (mainTabindex !== '-1' && mainTabindex !== '0') {
+            addResult({ element: 'main', issue: 'SPA sem skip-link e <main> sem tabindex — após navegação, foco pode ficar preso no topo da página sem mecanismo de pular para o conteúdo.', status: 'warning', htmlSnippet: '', trapType: 'spa-no-focus-management' });
+          }
+        }
 
         if (results.length === 0) results.push({ element: 'page', issue: 'Nenhum bloqueio de teclado detectado.', status: 'approved', htmlSnippet: '', trapType: 'approved' });
         return results;
