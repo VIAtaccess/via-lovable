@@ -617,6 +617,768 @@ app.post('/analyze', async (req, res) => {
         return results;
       };
 
+
+      // ===== 9b. analyzeKeyboardShortcuts (WCAG 2.1.4) =====
+      const analyzeKeyboardShortcuts = () => {
+        const results = [];
+
+        // 1. Check accesskey attributes — single-char shortcuts that can't be remapped by users
+        document.querySelectorAll('[accesskey]').forEach((el) => {
+          const key = el.getAttribute('accesskey') || '';
+          const name = el.textContent?.trim().slice(0, 60) || el.tagName.toLowerCase();
+          if (key.length === 1) {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: `accesskey="${key}" — atalho de tecla única que pode conflitar com tecnologias assistivas`,
+              status: 'warning',
+              htmlSnippet: snippet(el),
+              shortcutType: 'accesskey',
+            });
+          }
+        });
+
+        // 2. Check inline onkeydown/onkeypress handlers for single-key detection
+        document.querySelectorAll('[onkeydown], [onkeypress], [onkeyup]').forEach((el) => {
+          const handler = (el.getAttribute('onkeydown') || '') + (el.getAttribute('onkeypress') || '') + (el.getAttribute('onkeyup') || '');
+          // Detect patterns like event.key === 's' or e.keyCode == 83 (single char)
+          const singleKeyPattern = /\.key\s*===?\s*['"][a-zA-Z0-9]['"]|\.keyCode\s*===?\s*\d{2}\b|\.which\s*===?\s*\d{2}\b/;
+          if (singleKeyPattern.test(handler)) {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: 'Handler de teclado inline detecta tecla única — pode causar acionamento acidental',
+              status: 'warning',
+              htmlSnippet: snippet(el),
+              shortcutType: 'inline-handler',
+            });
+          }
+        });
+
+        // 3. Check for single-char tabindex + key handlers (common pattern)
+        document.querySelectorAll('[tabindex][onkeydown], [tabindex][onkeypress]').forEach((el) => {
+          if (!results.some(r => r.htmlSnippet === snippet(el))) {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: 'Elemento com tabindex e handler de teclado — verifique se atalhos podem ser desativados',
+              status: 'warning',
+              htmlSnippet: snippet(el),
+              shortcutType: 'tabindex-handler',
+            });
+          }
+        });
+
+        if (results.length === 0) {
+          results.push({
+            element: 'page',
+            issue: 'Nenhum atalho de tecla única detectado — OK.',
+            status: 'approved',
+            htmlSnippet: '',
+            shortcutType: 'approved',
+          });
+        }
+
+        return results;
+      };
+
+      // ===== 9c. analyzeTimeLimits (WCAG 2.2.1) =====
+      const analyzeTimeLimits = () => {
+        const results = [];
+
+        // 1. Check <meta http-equiv="refresh">
+        document.querySelectorAll('meta[http-equiv="refresh"]').forEach((el) => {
+          const content = el.getAttribute('content') || '';
+          const timeMatch = content.match(/^(\d+)/);
+          const time = timeMatch ? parseInt(timeMatch[1]) : 0;
+          if (time > 0) {
+            results.push({
+              element: 'meta',
+              issue: `Meta refresh com redirecionamento em ${time}s — usuário não pode controlar o tempo`,
+              status: 'error',
+              htmlSnippet: snippet(el),
+              timeLimitType: 'meta-refresh',
+            });
+          }
+        });
+
+        // 2. Check for session timeout patterns in scripts
+        document.querySelectorAll('script:not([src])').forEach((el) => {
+          const code = el.textContent || '';
+          // setTimeout/setInterval with redirect or reload
+          const hasTimeout = /setTimeout\s*\([^,]+,\s*(\d{4,})\)/i.test(code);
+          const hasRedirect = /location\s*[.=]|window\.location|document\.location|\.href\s*=/i.test(code);
+          const hasReload = /location\.reload|window\.location\.reload/i.test(code);
+          if (hasTimeout && (hasRedirect || hasReload)) {
+            results.push({
+              element: 'script',
+              issue: 'Script com timeout que redireciona/recarrega — pode limitar tempo do usuário',
+              status: 'warning',
+              htmlSnippet: code.slice(0, 400),
+              timeLimitType: 'script-timeout',
+            });
+          }
+
+          // Auto-slideshow / carousel with auto-advance
+          const hasAutoPlay = /autoplay|auto-play|autoSlide|autoAdvance|slideInterval|setInterval/i.test(code);
+          const hasSlide = /slide|carousel|banner|swiper|slick/i.test(code);
+          if (hasAutoPlay && hasSlide) {
+            results.push({
+              element: 'script',
+              issue: 'Carrossel/slider com avanço automático detectado — verifique se o usuário pode pausar',
+              status: 'warning',
+              htmlSnippet: code.slice(0, 400),
+              timeLimitType: 'auto-carousel',
+            });
+          }
+        });
+
+        // 3. Check for countdown/timer elements
+        document.querySelectorAll('[class*="countdown"], [class*="timer"], [id*="countdown"], [id*="timer"], [data-countdown], [data-timer]').forEach((el) => {
+          results.push({
+            element: el.tagName.toLowerCase(),
+            issue: 'Elemento de contagem regressiva/temporizador — verifique se o usuário pode estender o tempo',
+            status: 'warning',
+            htmlSnippet: snippet(el),
+            timeLimitType: 'countdown',
+          });
+        });
+
+        // 4. Check for auto-updating content (live regions with timers)
+        document.querySelectorAll('[aria-live]').forEach((el) => {
+          const live = el.getAttribute('aria-live');
+          if (live === 'polite' || live === 'assertive') {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: `Região aria-live="${live}" — conteúdo dinâmico (verifique se há controle de tempo)`,
+              status: 'approved',
+              htmlSnippet: snippet(el),
+              timeLimitType: 'live-region',
+            });
+          }
+        });
+
+        if (results.length === 0) {
+          results.push({
+            element: 'page',
+            issue: 'Nenhum limite de tempo detectado — OK.',
+            status: 'approved',
+            htmlSnippet: '',
+            timeLimitType: 'approved',
+          });
+        }
+
+        return results;
+      };
+
+      // ===== 9d. analyzeMovingContent (WCAG 2.2.2) =====
+      const analyzeMovingContent = () => {
+        const results = [];
+
+        // 1. Check marquee elements (obsolete but still used)
+        document.querySelectorAll('marquee').forEach((el) => {
+          results.push({
+            element: 'marquee',
+            issue: 'Elemento <marquee> — conteúdo em movimento sem controle de pausa',
+            status: 'error',
+            htmlSnippet: snippet(el),
+            movingType: 'marquee',
+          });
+        });
+
+        // 2. Check blink elements
+        document.querySelectorAll('blink').forEach((el) => {
+          results.push({
+            element: 'blink',
+            issue: 'Elemento <blink> — conteúdo piscante sem controle',
+            status: 'error',
+            htmlSnippet: snippet(el),
+            movingType: 'blink',
+          });
+        });
+
+        // 3. Autoplay videos without controls
+        document.querySelectorAll('video').forEach((el) => {
+          const autoplay = el.hasAttribute('autoplay');
+          const hasControls = el.hasAttribute('controls');
+          if (autoplay && !hasControls) {
+            results.push({
+              element: 'video',
+              issue: 'Vídeo com autoplay sem atributo controls — usuário não pode pausar',
+              status: 'error',
+              htmlSnippet: snippet(el),
+              movingType: 'video-autoplay',
+            });
+          } else if (autoplay && hasControls) {
+            results.push({
+              element: 'video',
+              issue: 'Vídeo com autoplay mas com controls — usuário pode pausar',
+              status: 'warning',
+              htmlSnippet: snippet(el),
+              movingType: 'video-autoplay',
+            });
+          }
+        });
+
+        // 4. GIF images (animated content without pause control)
+        document.querySelectorAll('img[src*=".gif"], img[data-src*=".gif"]').forEach((el) => {
+          results.push({
+            element: 'img',
+            issue: 'Imagem GIF animada — verifique se há mecanismo para pausar a animação',
+            status: 'warning',
+            htmlSnippet: snippet(el),
+            movingType: 'gif',
+          });
+        });
+
+        // 5. CSS animations on large elements (potential auto-moving content)
+        document.querySelectorAll('[class*="animate"], [class*="scroll"], [class*="marquee"], [class*="ticker"], [class*="slide"], [class*="carousel"], [class*="swiper"]').forEach((el) => {
+          const style = window.getComputedStyle(el);
+          const animName = style.animationName;
+          const animDuration = parseFloat(style.animationDuration) || 0;
+          const animIteration = style.animationIterationCount;
+
+          if (animName && animName !== 'none' && animIteration === 'infinite') {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: `Animação CSS infinita "${animName}" — verifique se o usuário pode pausar`,
+              status: 'warning',
+              htmlSnippet: snippet(el),
+              movingType: 'css-animation',
+            });
+          }
+        });
+
+        // 6. Auto-updating content (news tickers, stock tickers, etc.)
+        document.querySelectorAll('[class*="ticker"], [class*="news-scroll"], [class*="auto-update"], [class*="live-feed"]').forEach((el) => {
+          if (!results.some(r => r.htmlSnippet === snippet(el))) {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: 'Conteúdo com atualização automática detectado — verifique se pode ser pausado',
+              status: 'warning',
+              htmlSnippet: snippet(el),
+              movingType: 'auto-update',
+            });
+          }
+        });
+
+        if (results.length === 0) {
+          results.push({
+            element: 'page',
+            issue: 'Nenhum conteúdo em movimento automático detectado — OK.',
+            status: 'approved',
+            htmlSnippet: '',
+            movingType: 'approved',
+          });
+        }
+
+        return results;
+      };
+
+      // ===== 9e. analyzeFlashing (WCAG 2.3.1) =====
+      const analyzeFlashing = () => {
+        const results = [];
+
+        // 1. Check blink elements
+        document.querySelectorAll('blink').forEach((el) => {
+          results.push({ element: 'blink', issue: 'Elemento <blink> pode causar flashes — risco de epilepsia', status: 'error', htmlSnippet: snippet(el), flashType: 'blink' });
+        });
+
+        // 2. CSS animations with very fast duration (potential flashing)
+        document.querySelectorAll('*').forEach((el) => {
+          const style = window.getComputedStyle(el);
+          const animName = style.animationName;
+          const animDuration = parseFloat(style.animationDuration) || 0;
+          const animIteration = style.animationIterationCount;
+          // Flash threshold: animation < 333ms (3 per second) and infinite
+          if (animName && animName !== 'none' && animDuration > 0 && animDuration < 0.334 && animIteration === 'infinite') {
+            results.push({ element: el.tagName.toLowerCase(), issue: `Animação "${animName}" com ${Math.round(1/animDuration)}Hz — possível flash >3x/s`, status: 'error', htmlSnippet: snippet(el), flashType: 'fast-animation' });
+          }
+        });
+
+        // 3. Inline styles with rapid blinking
+        document.querySelectorAll('[style]').forEach((el) => {
+          const style = el.getAttribute('style') || '';
+          if (/animation.*blink|@keyframes.*opacity|text-decoration.*blink/i.test(style)) {
+            results.push({ element: el.tagName.toLowerCase(), issue: 'Estilo inline com efeito de piscar — verifique frequência', status: 'warning', htmlSnippet: snippet(el), flashType: 'inline-blink' });
+          }
+        });
+
+        // 4. Scripts with rapid DOM toggling patterns
+        document.querySelectorAll('script:not([src])').forEach((el) => {
+          const code = el.textContent || '';
+          if (/setInterval\s*\([^,]+,\s*([1-9]\d?|[12]\d{2}|3[0-2]\d|33[0-3])\)/.test(code)) {
+            const match = code.match(/setInterval\s*\([^,]+,\s*(\d+)\)/);
+            if (match && parseInt(match[1]) < 334) {
+              results.push({ element: 'script', issue: `setInterval com ${match[1]}ms — possível flash >3x/s`, status: 'warning', htmlSnippet: code.slice(0, 400), flashType: 'script-interval' });
+            }
+          }
+        });
+
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhum conteúdo com flash rápido detectado — OK.', status: 'approved', htmlSnippet: '', flashType: 'approved' });
+        }
+        return results;
+      };
+
+      // ===== 9f. analyzeFocusOrder (WCAG 2.4.3) =====
+      const analyzeFocusOrder = () => {
+        const results = [];
+        const focusable = Array.from(document.querySelectorAll(
+          'a[href], button, input:not([type="hidden"]), select, textarea, [tabindex], [contenteditable="true"], details, summary, iframe, audio[controls], video[controls]'
+        ));
+
+        // 1. Check each focusable element for positive tabindex
+        focusable.forEach((el) => {
+          const tabindex = parseInt(el.getAttribute('tabindex') || '0');
+          if (tabindex > 0) {
+            results.push({ element: el.tagName.toLowerCase(), issue: `tabindex="${tabindex}" — altera ordem natural de foco`, status: 'error', htmlSnippet: snippet(el), focusType: 'positive-tabindex' });
+          }
+        });
+
+        // 2. Check visual order vs DOM order for focusable elements in flex/grid containers
+        document.querySelectorAll('[style*="order"], [style*="flex-direction: row-reverse"], [style*="flex-direction: column-reverse"]').forEach((el) => {
+          const focusChildren = el.querySelectorAll('a[href], button, input, select, textarea, [tabindex]');
+          if (focusChildren.length > 1) {
+            results.push({ element: el.tagName.toLowerCase(), issue: 'Container com CSS order/reverse contém elementos focáveis — ordem visual pode divergir do DOM', status: 'warning', htmlSnippet: snippet(el), focusType: 'css-order' });
+          }
+        });
+
+        // 3. Check modals/dialogs for focus management
+        document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog').forEach((el) => {
+          const focusableInModal = el.querySelectorAll('a[href], button, input, select, textarea, [tabindex]');
+          const hasAutofocus = el.querySelector('[autofocus]');
+          const hasTabindexNeg = el.querySelector('[tabindex="-1"]');
+          if (focusableInModal.length > 0 && !hasAutofocus && !hasTabindexNeg && !el.hasAttribute('tabindex')) {
+            results.push({ element: el.tagName.toLowerCase(), issue: 'Modal sem gerenciamento de foco (sem autofocus ou tabindex) — foco pode não mover para o modal', status: 'warning', htmlSnippet: snippet(el), focusType: 'modal-focus' });
+          } else if (focusableInModal.length > 0) {
+            results.push({ element: el.tagName.toLowerCase(), issue: 'Modal com gerenciamento de foco — OK', status: 'approved', htmlSnippet: snippet(el), focusType: 'modal-focus' });
+          }
+        });
+
+        // 4. Check for skip-to-content as first focusable
+        if (focusable.length > 0) {
+          const first = focusable[0];
+          const isSkipLink = first.tagName === 'A' && (first.getAttribute('href') || '').startsWith('#') && (first.textContent || '').toLowerCase().match(/skip|pular|ir para|saltar/);
+          if (isSkipLink) {
+            results.push({ element: 'a', issue: 'Skip link como primeiro elemento focável — boa prática', status: 'approved', htmlSnippet: snippet(first), focusType: 'skip-link' });
+          }
+        }
+
+        // 5. Report total focusable elements
+        if (focusable.length > 0) {
+          results.push({ element: 'page', issue: `${focusable.length} elementos focáveis encontrados na página`, status: 'approved', htmlSnippet: '', focusType: 'summary' });
+        }
+
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhum problema de ordem de foco detectado — OK.', status: 'approved', htmlSnippet: '', focusType: 'approved' });
+        }
+        return results;
+      };
+
+      // ===== 9g. analyzePointerGestures (WCAG 2.5.1) =====
+      const analyzePointerGestures = () => {
+        const results = [];
+
+        // 1. Check for touch/gesture event handlers
+        document.querySelectorAll('[ontouchstart], [ontouchmove], [ontouchend], [ongesturestart], [ongesturechange], [ongestureend]').forEach((el) => {
+          const hasClick = el.hasAttribute('onclick') || el.tagName === 'BUTTON' || el.tagName === 'A';
+          results.push({
+            element: el.tagName.toLowerCase(),
+            issue: hasClick ? 'Elemento com gesto de toque E alternativa de clique — OK' : 'Elemento com gesto de toque sem alternativa de clique simples',
+            status: hasClick ? 'approved' : 'warning',
+            htmlSnippet: snippet(el),
+            gestureType: 'touch-event',
+          });
+        });
+
+        // 2. Check for drag-and-drop without alternatives
+        document.querySelectorAll('[draggable="true"], [ondragstart], [ondrag], [ondrop]').forEach((el) => {
+          results.push({
+            element: el.tagName.toLowerCase(),
+            issue: 'Elemento com drag-and-drop — verifique se há alternativa de clique/teclado',
+            status: 'warning',
+            htmlSnippet: snippet(el),
+            gestureType: 'drag-drop',
+          });
+        });
+
+        // 3. Check for pinch/zoom custom handlers in scripts
+        document.querySelectorAll('script:not([src])').forEach((el) => {
+          const code = el.textContent || '';
+          if (/pinch|gesture|swipe|pan[A-Z]|hammer\.js|touchmove.*scale/i.test(code)) {
+            results.push({
+              element: 'script',
+              issue: 'Script com gestos complexos (pinch/swipe/pan) — verifique se há alternativa simples',
+              status: 'warning',
+              htmlSnippet: code.slice(0, 400),
+              gestureType: 'complex-gesture',
+            });
+          }
+        });
+
+        // 4. Check maps/canvas that commonly require gestures
+        document.querySelectorAll('canvas, [class*="map"], [id*="map"], [class*="leaflet"], [class*="mapbox"], [class*="google-map"]').forEach((el) => {
+          results.push({
+            element: el.tagName.toLowerCase(),
+            issue: 'Mapa/Canvas detectado — estes elementos frequentemente requerem gestos complexos, verifique alternativas',
+            status: 'warning',
+            htmlSnippet: snippet(el),
+            gestureType: 'map-canvas',
+          });
+        });
+
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhum gesto complexo detectado — OK.', status: 'approved', htmlSnippet: '', gestureType: 'approved' });
+        }
+        return results;
+      };
+
+      // ===== 9h. analyzePointerCancellation (WCAG 2.5.2) =====
+      const analyzePointerCancellation = () => {
+        const results = [];
+
+        // Check for mousedown/touchstart handlers without mouseup/touchend (action on press, not release)
+        document.querySelectorAll('[onmousedown]').forEach((el) => {
+          const hasMouseup = el.hasAttribute('onmouseup') || el.hasAttribute('onclick');
+          results.push({
+            element: el.tagName.toLowerCase(),
+            issue: hasMouseup ? 'onmousedown com onclick/onmouseup — cancelamento possível' : 'onmousedown sem onclick/onmouseup — ação pode ocorrer ao pressionar, sem possibilidade de cancelar',
+            status: hasMouseup ? 'approved' : 'warning',
+            htmlSnippet: snippet(el),
+            pointerType: 'mousedown',
+          });
+        });
+
+        document.querySelectorAll('[ontouchstart]').forEach((el) => {
+          const hasTouchEnd = el.hasAttribute('ontouchend') || el.hasAttribute('onclick');
+          if (!results.some(r => r.htmlSnippet === snippet(el))) {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: hasTouchEnd ? 'touchstart com touchend/click — cancelamento possível' : 'touchstart sem alternativa de soltar — ação sem cancelamento',
+              status: hasTouchEnd ? 'approved' : 'warning',
+              htmlSnippet: snippet(el),
+              pointerType: 'touchstart',
+            });
+          }
+        });
+
+        // Check scripts for mousedown-only patterns
+        document.querySelectorAll('script:not([src])').forEach((el) => {
+          const code = el.textContent || '';
+          const hasMousedown = /addEventListener\s*\(\s*['"]mousedown['"]/.test(code);
+          const hasMouseup = /addEventListener\s*\(\s*['"]mouseup['"]/.test(code);
+          const hasClick = /addEventListener\s*\(\s*['"]click['"]/.test(code);
+          if (hasMousedown && !hasMouseup && !hasClick) {
+            results.push({
+              element: 'script',
+              issue: 'Script usa mousedown sem mouseup/click — ação pode não ser cancelável',
+              status: 'warning',
+              htmlSnippet: code.slice(0, 400),
+              pointerType: 'script-mousedown',
+            });
+          }
+        });
+
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhum problema de cancelamento de ponteiro detectado — OK.', status: 'approved', htmlSnippet: '', pointerType: 'approved' });
+        }
+        return results;
+      };
+
+      // ===== 9i. analyzeLabelInName (WCAG 2.5.3) =====
+      const analyzeLabelInName = () => {
+        const results = [];
+
+        document.querySelectorAll('button, [role="button"], a[href], input[type="submit"], input[type="button"], input[type="reset"]').forEach((el) => {
+          const visibleText = (el.textContent || '').trim().toLowerCase();
+          const ariaLabel = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+          const ariaLabelledby = el.getAttribute('aria-labelledby');
+          let accessibleName = ariaLabel;
+
+          if (ariaLabelledby) {
+            const labelEl = document.getElementById(ariaLabelledby);
+            if (labelEl) accessibleName = (labelEl.textContent || '').trim().toLowerCase();
+          }
+
+          if (!visibleText || !accessibleName) return; // Skip if no visible text or no accessible name to compare
+
+          if (accessibleName && visibleText && !accessibleName.includes(visibleText)) {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: `Nome acessível "${ariaLabel || accessibleName}" não contém o texto visível "${visibleText.slice(0, 40)}"`,
+              status: 'error',
+              htmlSnippet: snippet(el),
+              labelType: 'mismatch',
+            });
+          } else if (accessibleName && visibleText) {
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: `Nome acessível contém texto visível — OK`,
+              status: 'approved',
+              htmlSnippet: snippet(el),
+              labelType: 'match',
+            });
+          }
+        });
+
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhum elemento com nome acessível divergente detectado — OK.', status: 'approved', htmlSnippet: '', labelType: 'approved' });
+        }
+        return results;
+      };
+
+      // ===== 9j. analyzeMotionActuation (WCAG 2.5.4) =====
+      const analyzeMotionActuation = () => {
+        const results = [];
+
+        // Check for devicemotion/deviceorientation event listeners in scripts
+        document.querySelectorAll('script:not([src])').forEach((el) => {
+          const code = el.textContent || '';
+          if (/devicemotion|deviceorientation|accelerometer|gyroscope/i.test(code)) {
+            const hasButton = /button|click|tap|alternativ/i.test(code);
+            results.push({
+              element: 'script',
+              issue: hasButton ? 'Função por movimento com possível alternativa de botão' : 'Função ativada por movimento do dispositivo — verifique se há alternativa de botão',
+              status: hasButton ? 'approved' : 'warning',
+              htmlSnippet: code.slice(0, 400),
+              motionType: 'device-motion',
+            });
+          }
+          if (/shake|tilt|rotate.*device/i.test(code)) {
+            results.push({
+              element: 'script',
+              issue: 'Detecção de chacoalhar/inclinar dispositivo — verifique se há alternativa de interface',
+              status: 'warning',
+              htmlSnippet: code.slice(0, 400),
+              motionType: 'shake-tilt',
+            });
+          }
+        });
+
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhuma função por movimento detectada — OK.', status: 'approved', htmlSnippet: '', motionType: 'approved' });
+        }
+        return results;
+      };
+
+      // ===== 9k. analyzeOnFocus (WCAG 3.2.1) =====
+      const analyzeOnFocus = () => {
+        const results = [];
+        document.querySelectorAll('[onfocus]').forEach((el) => {
+          const handler = el.getAttribute('onfocus') || '';
+          const changesContext = /submit|window\.open|location|\.href|alert|confirm|prompt/i.test(handler);
+          results.push({
+            element: el.tagName.toLowerCase(),
+            issue: changesContext ? 'onfocus causa mudança de contexto (submit/redirect/popup)' : 'onfocus detectado — verifique se não altera contexto',
+            status: changesContext ? 'error' : 'warning',
+            htmlSnippet: snippet(el),
+            onFocusType: changesContext ? 'context-change' : 'handler',
+          });
+        });
+        // Check autofocus that may disorient
+        document.querySelectorAll('[autofocus]').forEach((el) => {
+          results.push({
+            element: el.tagName.toLowerCase(),
+            issue: 'Elemento com autofocus — pode desorientar usuários de leitores de tela',
+            status: 'warning',
+            htmlSnippet: snippet(el),
+            onFocusType: 'autofocus',
+          });
+        });
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhuma mudança de contexto ao receber foco — OK.', status: 'approved', htmlSnippet: '', onFocusType: 'approved' });
+        }
+        return results;
+      };
+
+      // ===== 9l. analyzeOnInput (WCAG 3.2.2) =====
+      const analyzeOnInput = () => {
+        const results = [];
+        // Select that auto-submits
+        document.querySelectorAll('select[onchange]').forEach((el) => {
+          const handler = el.getAttribute('onchange') || '';
+          const changesContext = /submit|window\.open|location|\.href|this\.form\.submit/i.test(handler);
+          results.push({
+            element: 'select',
+            issue: changesContext ? 'Select com onchange que submete/redireciona — mudança de contexto sem aviso' : 'Select com onchange — verifique se não altera contexto inesperadamente',
+            status: changesContext ? 'error' : 'warning',
+            htmlSnippet: snippet(el),
+            onInputType: changesContext ? 'context-change' : 'handler',
+          });
+        });
+        // Checkboxes/radios that auto-submit
+        document.querySelectorAll('input[type="checkbox"][onchange], input[type="radio"][onchange]').forEach((el) => {
+          const handler = el.getAttribute('onchange') || '';
+          const changesContext = /submit|window\.open|location|\.href/i.test(handler);
+          if (changesContext) {
+            results.push({
+              element: 'input',
+              issue: 'Input checkbox/radio com onchange que submete — mudança de contexto inesperada',
+              status: 'error',
+              htmlSnippet: snippet(el),
+              onInputType: 'context-change',
+            });
+          }
+        });
+        // Text inputs that submit on change
+        document.querySelectorAll('input[type="text"][onchange], input[type="search"][onchange]').forEach((el) => {
+          const handler = el.getAttribute('onchange') || '';
+          if (/submit|location|\.href/i.test(handler)) {
+            results.push({
+              element: 'input',
+              issue: 'Input de texto com onchange que submete — usuário não espera submissão automática',
+              status: 'error',
+              htmlSnippet: snippet(el),
+              onInputType: 'auto-submit',
+            });
+          }
+        });
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhuma mudança de contexto ao receber entrada — OK.', status: 'approved', htmlSnippet: '', onInputType: 'approved' });
+        }
+        return results;
+      };
+
+      // ===== 9m. analyzeConsistentHelp (WCAG 3.2.6) =====
+      const analyzeConsistentHelp = () => {
+        const results = [];
+        const helpPatterns = /ajuda|help|suporte|support|faq|contato|contact|chat|atendimento|sac/i;
+        const helpLinks = document.querySelectorAll('a[href], button');
+        let foundHelp = false;
+        helpLinks.forEach((el) => {
+          const text = (el.textContent || '').trim();
+          const ariaLabel = el.getAttribute('aria-label') || '';
+          if (helpPatterns.test(text) || helpPatterns.test(ariaLabel)) {
+            foundHelp = true;
+            results.push({
+              element: el.tagName.toLowerCase(),
+              issue: `Link/botão de ajuda "${text.slice(0, 40)}" encontrado — verifique se aparece consistentemente em todas as páginas`,
+              status: 'approved',
+              htmlSnippet: snippet(el),
+              helpType: 'help-link',
+            });
+          }
+        });
+        // Check for chat widgets
+        document.querySelectorAll('[class*="chat"], [id*="chat"], [class*="intercom"], [class*="zendesk"], [class*="tawk"], [class*="crisp"], [class*="drift"]').forEach((el) => {
+          if (!foundHelp) foundHelp = true;
+          results.push({
+            element: el.tagName.toLowerCase(),
+            issue: 'Widget de chat/suporte detectado — verifique se aparece em todas as páginas',
+            status: 'approved',
+            htmlSnippet: snippet(el),
+            helpType: 'chat-widget',
+          });
+        });
+        if (!foundHelp) {
+          results.push({ element: 'page', issue: 'Nenhum link de ajuda/contato/suporte encontrado na página', status: 'warning', htmlSnippet: '', helpType: 'missing' });
+        }
+        return results;
+      };
+
+      // ===== 9n. analyzeErrorIdentification (WCAG 3.3.1) =====
+      const analyzeErrorIdentification = () => {
+        const results = [];
+        document.querySelectorAll('form').forEach((form) => {
+          const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea');
+          const hasRequired = form.querySelectorAll('[required], [aria-required="true"]');
+          const hasAriaInvalid = form.querySelectorAll('[aria-invalid]');
+          const hasAriaDescribedby = form.querySelectorAll('[aria-describedby]');
+          const hasErrorMsg = form.querySelectorAll('[class*="error"], [class*="invalid"], [role="alert"], [aria-live="polite"], [aria-live="assertive"]');
+          
+          inputs.forEach((input) => {
+            const name = input.getAttribute('name') || input.getAttribute('id') || input.tagName.toLowerCase();
+            const isRequired = input.hasAttribute('required') || input.getAttribute('aria-required') === 'true';
+            const hasDescribedby = input.hasAttribute('aria-describedby');
+            const issues = [];
+            
+            if (isRequired && !hasDescribedby) {
+              issues.push('Campo obrigatório sem aria-describedby para mensagem de erro');
+            }
+            if (isRequired && !input.hasAttribute('aria-invalid')) {
+              issues.push('Campo obrigatório sem aria-invalid para indicar estado de erro');
+            }
+            
+            if (issues.length > 0) {
+              results.push({ element: input.tagName.toLowerCase(), issue: issues[0], status: 'warning', htmlSnippet: snippet(input), errorType: 'missing-error-feedback' });
+            }
+          });
+
+          if (hasRequired.length > 0 && hasErrorMsg.length === 0) {
+            results.push({ element: 'form', issue: 'Formulário com campos obrigatórios mas sem área de mensagem de erro visível', status: 'warning', htmlSnippet: snippet(form), errorType: 'no-error-container' });
+          } else if (hasRequired.length > 0 && hasErrorMsg.length > 0) {
+            results.push({ element: 'form', issue: 'Formulário com área de erro identificada — OK', status: 'approved', htmlSnippet: snippet(form), errorType: 'has-error-container' });
+          }
+        });
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhum formulário encontrado para análise de erros.', status: 'approved', htmlSnippet: '', errorType: 'no-forms' });
+        }
+        return results;
+      };
+
+      // ===== 9o. analyzeLabelsInstructions (WCAG 3.3.2) =====
+      const analyzeLabelsInstructions = () => {
+        const results = [];
+        document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]), select, textarea').forEach((el) => {
+          const id = el.getAttribute('id');
+          const name = el.getAttribute('name') || '';
+          const type = el.getAttribute('type') || el.tagName.toLowerCase();
+          const ariaLabel = el.getAttribute('aria-label')?.trim();
+          const ariaLabelledby = el.getAttribute('aria-labelledby');
+          const placeholder = el.getAttribute('placeholder')?.trim();
+          const title = el.getAttribute('title')?.trim();
+          const hasLabel = id ? document.querySelector(`label[for="${id}"]`) : null;
+          const parentLabel = el.closest('label');
+          
+          const hasAccessibleName = ariaLabel || ariaLabelledby || hasLabel || parentLabel || title;
+          
+          if (!hasAccessibleName && !placeholder) {
+            results.push({ element: el.tagName.toLowerCase(), issue: `Campo "${name || type}" sem label, aria-label ou placeholder`, status: 'error', htmlSnippet: snippet(el), labelInstType: 'no-label' });
+          } else if (!hasAccessibleName && placeholder) {
+            results.push({ element: el.tagName.toLowerCase(), issue: `Campo "${name || type}" usa apenas placeholder como rótulo — placeholder desaparece ao digitar`, status: 'warning', htmlSnippet: snippet(el), labelInstType: 'placeholder-only' });
+          } else if (hasAccessibleName) {
+            results.push({ element: el.tagName.toLowerCase(), issue: `Campo "${name || type}" com rótulo acessível — OK`, status: 'approved', htmlSnippet: snippet(el), labelInstType: 'has-label' });
+          }
+        });
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhum campo de formulário encontrado.', status: 'approved', htmlSnippet: '', labelInstType: 'no-inputs' });
+        }
+        return results;
+      };
+
+      // ===== 9p. analyzeRedundantEntry (WCAG 3.3.7) =====
+      const analyzeRedundantEntry = () => {
+        const results = [];
+        document.querySelectorAll('form').forEach((form) => {
+          const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
+          const names = new Map();
+          inputs.forEach((input) => {
+            const name = (input.getAttribute('name') || '').toLowerCase();
+            const type = input.getAttribute('type') || 'text';
+            const autocomplete = input.getAttribute('autocomplete');
+            if (name) {
+              if (names.has(name)) {
+                results.push({ element: 'input', issue: `Campo "${name}" aparece mais de uma vez no mesmo formulário — possível entrada redundante`, status: 'warning', htmlSnippet: snippet(input), redundantType: 'duplicate-name' });
+              }
+              names.set(name, true);
+            }
+            // Check for confirm fields (common redundancy)
+            if (/confirm|confirma|repeat|repet|verify|verific/i.test(name)) {
+              results.push({ element: 'input', issue: `Campo "${name}" parece pedir confirmação redundante — considere usar autocomplete`, status: 'warning', htmlSnippet: snippet(input), redundantType: 'confirm-field' });
+            }
+            // Check for autocomplete support
+            if (['text', 'email', 'tel', 'url'].includes(type) && !autocomplete) {
+              const suggestedAutocomplete = /email/i.test(name) ? 'email' : /phone|tel/i.test(name) ? 'tel' : /name|nome/i.test(name) ? 'name' : null;
+              if (suggestedAutocomplete) {
+                results.push({ element: 'input', issue: `Campo "${name}" sem autocomplete="${suggestedAutocomplete}" — autocomplete evita entrada redundante`, status: 'warning', htmlSnippet: snippet(input), redundantType: 'no-autocomplete' });
+              }
+            }
+          });
+        });
+        if (results.length === 0) {
+          results.push({ element: 'page', issue: 'Nenhuma entrada redundante detectada — OK.', status: 'approved', htmlSnippet: '', redundantType: 'approved' });
+        }
+        return results;
+      };
+
       // ===== 10. analyzeLinks =====
       const analyzeLinks = () => {
         const results = [];
@@ -744,9 +1506,95 @@ app.post('/analyze', async (req, res) => {
       const audioControl = analyzeAudioControl();
       const keyboard = analyzeKeyboard();
       const keyboardTrap = analyzeKeyboardTrap();
+      const keyboardShortcuts = analyzeKeyboardShortcuts();
+      const timeLimits = analyzeTimeLimits();
+      const movingContent = analyzeMovingContent();
+      const flashing = analyzeFlashing();
+      const focusOrder = analyzeFocusOrder();
+      const pointerGestures = analyzePointerGestures();
+      const pointerCancellation = analyzePointerCancellation();
+      const labelInName = analyzeLabelInName();
+      const motionActuation = analyzeMotionActuation();
+      const onFocus = analyzeOnFocus();
+      const onInput = analyzeOnInput();
+      const consistentHelp = analyzeConsistentHelp();
+      const errorIdentification = analyzeErrorIdentification();
+      const labelsInstructions = analyzeLabelsInstructions();
+      const redundantEntry = analyzeRedundantEntry();
       const links = analyzeLinks();
       const interactives = analyzeInteractives();
       const pageMeta = analyzePageMeta();
+
+      // ===== 13. analyzeStatusMessages (4.1.3) =====
+      const analyzeStatusMessages = () => {
+        const results = [];
+        // 1. Check elements with role="status"
+        document.querySelectorAll('[role="status"]').forEach((el) => {
+          const text = (el.textContent || '').trim();
+          const ariaLive = el.getAttribute('aria-live') || '';
+          const issues = [];
+          if (!text && !el.children.length) issues.push('role="status" presente mas elemento vazio');
+          results.push({ element: el.tagName.toLowerCase(), role: 'status', text: text.slice(0, 200), ariaLive: ariaLive || 'polite (implícito)', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
+        });
+        // 2. Check elements with role="alert"
+        document.querySelectorAll('[role="alert"]').forEach((el) => {
+          const text = (el.textContent || '').trim();
+          const ariaLive = el.getAttribute('aria-live') || '';
+          const issues = [];
+          if (!text && !el.children.length) issues.push('role="alert" presente mas elemento vazio');
+          results.push({ element: el.tagName.toLowerCase(), role: 'alert', text: text.slice(0, 200), ariaLive: ariaLive || 'assertive (implícito)', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
+        });
+        // 3. Check elements with role="log"
+        document.querySelectorAll('[role="log"]').forEach((el) => {
+          const text = (el.textContent || '').trim();
+          results.push({ element: el.tagName.toLowerCase(), role: 'log', text: text.slice(0, 200), ariaLive: el.getAttribute('aria-live') || 'polite (implícito)', issues: [], status: 'approved', htmlSnippet: snippet(el, 400) });
+        });
+        // 4. Check elements with role="progressbar"
+        document.querySelectorAll('[role="progressbar"]').forEach((el) => {
+          const ariaValueNow = el.getAttribute('aria-valuenow');
+          const ariaValueText = el.getAttribute('aria-valuetext');
+          const ariaLabel = el.getAttribute('aria-label');
+          const issues = [];
+          if (!ariaValueNow && !ariaValueText) issues.push('Barra de progresso sem aria-valuenow ou aria-valuetext');
+          if (!ariaLabel && !el.getAttribute('aria-labelledby')) issues.push('Barra de progresso sem label acessível');
+          results.push({ element: el.tagName.toLowerCase(), role: 'progressbar', text: ariaValueText || `${ariaValueNow || '?'}%`, ariaLive: el.getAttribute('aria-live') || '', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
+        });
+        // 5. Check aria-live regions
+        document.querySelectorAll('[aria-live]').forEach((el) => {
+          const role = el.getAttribute('role') || '';
+          if (['status', 'alert', 'log', 'progressbar'].includes(role)) return; // already checked
+          const ariaLive = el.getAttribute('aria-live') || '';
+          const text = (el.textContent || '').trim();
+          results.push({ element: el.tagName.toLowerCase(), role: role || '(sem role)', text: text.slice(0, 200), ariaLive, issues: [], status: 'approved', htmlSnippet: snippet(el, 400) });
+        });
+        // 6. Check forms for error messages without proper live regions
+        document.querySelectorAll('form').forEach((form) => {
+          const errorMsgs = form.querySelectorAll('[class*="error"], [class*="invalid"], [class*="danger"], .field-error, .form-error, .validation-error, .error-message');
+          errorMsgs.forEach((errEl) => {
+            const role = errEl.getAttribute('role') || '';
+            const ariaLive = errEl.getAttribute('aria-live') || '';
+            const hasLiveRegion = role === 'alert' || role === 'status' || !!ariaLive;
+            if (!hasLiveRegion) {
+              results.push({ element: errEl.tagName.toLowerCase(), role: '(sem role)', text: (errEl.textContent || '').trim().slice(0, 200), ariaLive: '(ausente)', issues: ['Mensagem de erro sem role="alert" ou aria-live — não será anunciada por leitores de tela'], status: 'error', htmlSnippet: snippet(errEl, 400) });
+            }
+          });
+        });
+        // 7. Check toast/notification containers
+        const toastSelectors = '[class*="toast"], [class*="notification"], [class*="snackbar"], [class*="alert-banner"], [class*="flash-message"]';
+        document.querySelectorAll(toastSelectors).forEach((el) => {
+          const role = el.getAttribute('role') || '';
+          const ariaLive = el.getAttribute('aria-live') || '';
+          const hasLiveRegion = role === 'alert' || role === 'status' || !!ariaLive;
+          if (!hasLiveRegion) {
+            results.push({ element: el.tagName.toLowerCase(), role: '(sem role)', text: (el.textContent || '').trim().slice(0, 200), ariaLive: '(ausente)', issues: ['Notificação/toast sem role ou aria-live — invisível para leitores de tela'], status: 'error', htmlSnippet: snippet(el, 400) });
+          }
+        });
+        if (results.length === 0) {
+          results.push({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: ['Nenhuma região de status encontrada — considere adicionar role="status" para mensagens dinâmicas'], status: 'warning', htmlSnippet: '' });
+        }
+        return results;
+      };
+      const statusMessages = analyzeStatusMessages();
 
       // Count total DOM elements
       const totalDomElements = document.querySelectorAll('*').length;
@@ -778,11 +1626,27 @@ app.post('/analyze', async (req, res) => {
         { id: '1.4.2', name: 'Controle de Áudio', wcagLevel: 'A', ...countByStatus(audioControl) },
         { id: '2.1.1', name: 'Teclado', wcagLevel: 'A', ...countByStatus(keyboard) },
         { id: '2.1.2', name: 'Sem Bloqueio de Teclado', wcagLevel: 'A', ...countByStatus(keyboardTrap) },
+        { id: '2.1.4', name: 'Atalhos de Teclado', wcagLevel: 'A', ...countByStatus(keyboardShortcuts) },
+        { id: '2.2.1', name: 'Tempo Ajustável', wcagLevel: 'A', ...countByStatus(timeLimits) },
+        { id: '2.2.2', name: 'Pausar, Parar, Ocultar', wcagLevel: 'A', ...countByStatus(movingContent) },
+        { id: '2.3.1', name: 'Três Flashes', wcagLevel: 'A', ...countByStatus(flashing) },
+        { id: '2.4.3', name: 'Ordem do Foco', wcagLevel: 'A', ...countByStatus(focusOrder) },
+        { id: '2.5.1', name: 'Gestos de Acionamento', wcagLevel: 'A', ...countByStatus(pointerGestures) },
+        { id: '2.5.2', name: 'Cancelamento de Ponteiro', wcagLevel: 'A', ...countByStatus(pointerCancellation) },
+        { id: '2.5.3', name: 'Rótulo em Nome', wcagLevel: 'A', ...countByStatus(labelInName) },
+        { id: '2.5.4', name: 'Atuação em Movimento', wcagLevel: 'A', ...countByStatus(motionActuation) },
         { id: '2.4.1', name: 'Ignorar Blocos', wcagLevel: 'A', ...countByStatus(metaBycriterion['2.4.1']) },
         { id: '2.4.2', name: 'Página com Título', wcagLevel: 'A', ...countByStatus(metaBycriterion['2.4.2']) },
         { id: '2.4.4', name: 'Finalidade do Link', wcagLevel: 'A', ...countByStatus(links) },
         { id: '3.1.1', name: 'Idioma da Página', wcagLevel: 'A', ...countByStatus(metaBycriterion['3.1.1']) },
+        { id: '3.2.1', name: 'Ao Receber Foco', wcagLevel: 'A', ...countByStatus(onFocus) },
+        { id: '3.2.2', name: 'Ao Receber Entrada', wcagLevel: 'A', ...countByStatus(onInput) },
+        { id: '3.2.6', name: 'Ajuda Consistente', wcagLevel: 'A', ...countByStatus(consistentHelp) },
+        { id: '3.3.1', name: 'Identificação de Erro', wcagLevel: 'A', ...countByStatus(errorIdentification) },
+        { id: '3.3.2', name: 'Rótulos ou Instruções', wcagLevel: 'A', ...countByStatus(labelsInstructions) },
+        { id: '3.3.7', name: 'Entrada Redundante', wcagLevel: 'A', ...countByStatus(redundantEntry) },
         { id: '4.1.2', name: 'Nome, Função, Valor', wcagLevel: 'A', ...countByStatus(interactives) },
+        { id: '4.1.3', name: 'Mensagens de Status', wcagLevel: 'A', ...countByStatus(statusMessages) },
       ];
 
       // Calculate score
@@ -812,9 +1676,25 @@ app.post('/analyze', async (req, res) => {
         audioControl: { ...countByStatus(audioControl), items: audioControl },
         keyboard: { ...countByStatus(keyboard), items: keyboard },
         keyboardTrap: { ...countByStatus(keyboardTrap), items: keyboardTrap },
+        keyboardShortcuts: { ...countByStatus(keyboardShortcuts), items: keyboardShortcuts },
+        timeLimits: { ...countByStatus(timeLimits), items: timeLimits },
+        movingContent: { ...countByStatus(movingContent), items: movingContent },
+        flashing: { ...countByStatus(flashing), items: flashing },
+        focusOrder: { ...countByStatus(focusOrder), items: focusOrder },
+        pointerGestures: { ...countByStatus(pointerGestures), items: pointerGestures },
+        pointerCancellation: { ...countByStatus(pointerCancellation), items: pointerCancellation },
+        labelInName: { ...countByStatus(labelInName), items: labelInName },
+        motionActuation: { ...countByStatus(motionActuation), items: motionActuation },
+        onFocus: { ...countByStatus(onFocus), items: onFocus },
+        onInput: { ...countByStatus(onInput), items: onInput },
+        consistentHelp: { ...countByStatus(consistentHelp), items: consistentHelp },
+        errorIdentification: { ...countByStatus(errorIdentification), items: errorIdentification },
+        labelsInstructions: { ...countByStatus(labelsInstructions), items: labelsInstructions },
+        redundantEntry: { ...countByStatus(redundantEntry), items: redundantEntry },
         links: { ...countByStatus(links), items: sortByStatus(links) },
         interactives: { ...countByStatus(interactives), items: sortByStatus(interactives) },
         pageMeta: { ...countByStatus(pageMeta), items: pageMeta },
+        statusMessages: { ...countByStatus(statusMessages), items: statusMessages },
         score: { score, level, criteria, totalErrors, totalWarnings, totalApproved, levelACounts, levelAACounts, levelAAACounts },
         totalDomElements,
       };
