@@ -629,37 +629,41 @@ app.post('/analyze', async (req, res) => {
       // ===== 9. analyzeKeyboardTrap =====
       const analyzeKeyboardTrap = () => {
         const results = [];
+        const seen = new Set();
+        const addResult = (r) => {
+          const key = `${r.trapType}:${(r.htmlSnippet || '').slice(0, 80)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          results.push(r);
+        };
+
         // 1. Check onfocus that forces focus back
         document.querySelectorAll('[onfocus]').forEach((el) => {
           const onfocus = el.getAttribute('onfocus') || '';
-          if (/\.focus\(\)|return\s+false|event\.preventDefault/i.test(onfocus)) results.push({ element: el.tagName.toLowerCase(), issue: 'onfocus pode forçar foco — possível bloqueio.', status: 'error', htmlSnippet: snippet(el), trapType: 'focus-trap' });
+          if (/\.focus\(\)|return\s+false|event\.preventDefault/i.test(onfocus)) addResult({ element: el.tagName.toLowerCase(), issue: 'onfocus pode forçar foco — possível bloqueio.', status: 'error', htmlSnippet: snippet(el), trapType: 'focus-trap' });
         });
         // 2. Check onblur that forces focus back
         document.querySelectorAll('[onblur]').forEach((el) => {
           const onblur = el.getAttribute('onblur') || '';
-          if (/\.focus\(\)|return\s+false|event\.preventDefault/i.test(onblur)) results.push({ element: el.tagName.toLowerCase(), issue: 'onblur reforça foco — impede saída por teclado.', status: 'error', htmlSnippet: snippet(el), trapType: 'focus-trap' });
+          if (/\.focus\(\)|return\s+false|event\.preventDefault/i.test(onblur)) addResult({ element: el.tagName.toLowerCase(), issue: 'onblur reforça foco — impede saída por teclado.', status: 'error', htmlSnippet: snippet(el), trapType: 'focus-trap' });
         });
         // 3. Check onkeydown that prevents Tab navigation
         document.querySelectorAll('[onkeydown]').forEach((el) => {
           const handler = el.getAttribute('onkeydown') || '';
           if (/preventDefault|return\s+false/i.test(handler) && /Tab|keyCode\s*===?\s*9/i.test(handler)) {
-            results.push({ element: el.tagName.toLowerCase(), issue: 'onkeydown bloqueia Tab — armadilha de teclado detectada.', status: 'error', htmlSnippet: snippet(el), trapType: 'tab-trap' });
+            addResult({ element: el.tagName.toLowerCase(), issue: 'onkeydown bloqueia Tab — armadilha de teclado detectada.', status: 'error', htmlSnippet: snippet(el), trapType: 'tab-trap' });
           }
         });
-        // 4. Check focusable elements with tabindex that might trap (React pattern)
+        // 4. Check React components with onKeyDown that may block Tab
         document.querySelectorAll('[tabindex]').forEach((el) => {
-          const props = el.__reactProps$;
-          if (!props) {
-            // Check for React internal props
-            const keys = Object.keys(el);
-            const reactPropsKey = keys.find(k => k.startsWith('__reactProps$'));
-            if (reactPropsKey) {
-              const rProps = el[reactPropsKey];
-              if (rProps && rProps.onKeyDown) {
-                const fnStr = rProps.onKeyDown.toString();
-                if (/preventDefault|stopPropagation/i.test(fnStr) && /Tab|key/i.test(fnStr)) {
-                  results.push({ element: el.tagName.toLowerCase(), issue: 'React onKeyDown pode bloquear Tab — possível armadilha de teclado.', status: 'error', htmlSnippet: snippet(el), trapType: 'react-tab-trap' });
-                }
+          const keys = Object.keys(el);
+          const reactPropsKey = keys.find(k => k.startsWith('__reactProps$'));
+          if (reactPropsKey) {
+            const rProps = el[reactPropsKey];
+            if (rProps && rProps.onKeyDown) {
+              const fnStr = rProps.onKeyDown.toString();
+              if (/preventDefault|stopPropagation/i.test(fnStr) && /Tab|key/i.test(fnStr)) {
+                addResult({ element: el.tagName.toLowerCase(), issue: 'React onKeyDown pode bloquear Tab — possível armadilha de teclado.', status: 'error', htmlSnippet: snippet(el), trapType: 'react-tab-trap' });
               }
             }
           }
@@ -669,28 +673,74 @@ app.post('/analyze', async (req, res) => {
           const title = el.getAttribute('title')?.trim();
           const src = el.getAttribute('src') || '';
           if (!title) {
-            results.push({ element: 'iframe', issue: 'iframe sem title — pode criar armadilha de foco sem contexto para o usuário.', status: 'warning', htmlSnippet: snippet(el), trapType: 'iframe-no-title' });
+            addResult({ element: 'iframe', issue: 'iframe sem title — pode criar armadilha de foco sem contexto para o usuário.', status: 'warning', htmlSnippet: snippet(el), trapType: 'iframe-no-title' });
           }
-          // Blank or javascript iframes
           if (src === 'about:blank' || src.startsWith('javascript:') || !src) {
-            results.push({ element: 'iframe', issue: 'iframe com src vazio/about:blank — pode capturar foco sem conteúdo útil.', status: 'warning', htmlSnippet: snippet(el), trapType: 'iframe-blank' });
+            addResult({ element: 'iframe', issue: 'iframe com src vazio/about:blank — pode capturar foco sem conteúdo útil.', status: 'warning', htmlSnippet: snippet(el), trapType: 'iframe-blank' });
           }
         });
         // 6. Check dialogs/modals
         document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog').forEach((el) => {
           const hasClose = el.querySelector('button[aria-label*="close" i], button[aria-label*="fechar" i], button[class*="close" i], [data-dismiss]');
-          if (!hasClose) results.push({ element: el.tagName.toLowerCase(), issue: 'Modal sem botão de fechar visível.', status: 'warning', htmlSnippet: snippet(el), trapType: 'no-escape' });
-          else results.push({ element: el.tagName.toLowerCase(), issue: 'Modal com mecanismo de fechar — OK.', status: 'approved', htmlSnippet: snippet(el), trapType: 'approved' });
+          if (!hasClose) addResult({ element: el.tagName.toLowerCase(), issue: 'Modal sem botão de fechar visível.', status: 'warning', htmlSnippet: snippet(el), trapType: 'no-escape' });
+          else addResult({ element: el.tagName.toLowerCase(), issue: 'Modal com mecanismo de fechar — OK.', status: 'approved', htmlSnippet: snippet(el), trapType: 'approved' });
         });
-        // 7. Check elements with onmousedown/ontouchstart but no keyboard equivalent (potential trap for keyboard users)
+        // 7. Check elements with mouse-only handlers but no keyboard equivalent
         document.querySelectorAll('[onmousedown], [ontouchstart]').forEach((el) => {
           const tag = el.tagName.toLowerCase();
           const hasKeyHandler = el.hasAttribute('onkeydown') || el.hasAttribute('onkeyup') || el.hasAttribute('onkeypress');
           const isNativeInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag);
           if (!hasKeyHandler && !isNativeInteractive) {
-            results.push({ element: tag, issue: `Elemento com onmousedown/ontouchstart mas sem handler de teclado — pode bloquear interação por teclado.`, status: 'warning', htmlSnippet: snippet(el), trapType: 'mouse-only' });
+            addResult({ element: tag, issue: 'Elemento com onmousedown/ontouchstart sem handler de teclado.', status: 'warning', htmlSnippet: snippet(el), trapType: 'mouse-only' });
           }
         });
+        // 8. Check for focusable containers with overflow that may trap scroll
+        document.querySelectorAll('[tabindex="0"], [tabindex="-1"]').forEach((el) => {
+          const tag = el.tagName.toLowerCase();
+          if (['a', 'button', 'input', 'select', 'textarea'].includes(tag)) return;
+          const style = window.getComputedStyle(el);
+          const isScrollable = (style.overflow === 'auto' || style.overflow === 'scroll' || style.overflowY === 'auto' || style.overflowY === 'scroll');
+          const hasHeight = el.scrollHeight > el.clientHeight;
+          if (isScrollable && hasHeight) {
+            // Check if there are focusable children inside
+            const focusableInside = el.querySelectorAll('a[href], button, input, select, textarea, [tabindex]');
+            if (focusableInside.length > 0) {
+              addResult({ element: tag, issue: 'Container rolável com tabindex e elementos focáveis internos — foco pode ficar preso dentro do container.', status: 'warning', htmlSnippet: snippet(el), trapType: 'scroll-trap' });
+            }
+          }
+        });
+        // 9. Check positive tabindex creating confusing focus order
+        const positiveTabindex = document.querySelectorAll('[tabindex]');
+        let positiveCount = 0;
+        positiveTabindex.forEach((el) => {
+          const val = parseInt(el.getAttribute('tabindex') || '0', 10);
+          if (val > 0) positiveCount++;
+        });
+        if (positiveCount > 3) {
+          addResult({ element: 'page', issue: `${positiveCount} elementos com tabindex positivo — pode criar ciclos de foco confusos.`, status: 'warning', htmlSnippet: '', trapType: 'tabindex-loop' });
+        }
+        // 10. Check for autofocus that may disorient users
+        const autofocusEls = document.querySelectorAll('[autofocus]');
+        if (autofocusEls.length > 1) {
+          addResult({ element: 'page', issue: `${autofocusEls.length} elementos com autofocus — múltiplos autofocus causam comportamento imprevisível.`, status: 'error', htmlSnippet: '', trapType: 'multi-autofocus' });
+        }
+        // 11. Check for custom widgets (combobox, listbox, menu, tree) without Escape key documentation
+        document.querySelectorAll('[role="combobox"], [role="listbox"], [role="menu"], [role="tree"], [role="treegrid"]').forEach((el) => {
+          const role = el.getAttribute('role');
+          const ariaExpanded = el.getAttribute('aria-expanded');
+          // If it can expand, check that there's an escape mechanism
+          if (ariaExpanded !== null) {
+            // Check parent or self for key handler
+            const hasKeyHandler = el.hasAttribute('onkeydown') || el.hasAttribute('onkeyup');
+            const keys = Object.keys(el);
+            const reactPropsKey = keys.find(k => k.startsWith('__reactProps$'));
+            const hasReactKeyHandler = reactPropsKey && el[reactPropsKey] && el[reactPropsKey].onKeyDown;
+            if (!hasKeyHandler && !hasReactKeyHandler) {
+              addResult({ element: el.tagName.toLowerCase(), issue: `Widget ${role} expansível sem handler de teclado detectado — usuário pode não conseguir fechar com Esc.`, status: 'warning', htmlSnippet: snippet(el), trapType: 'widget-no-escape' });
+            }
+          }
+        });
+
         if (results.length === 0) results.push({ element: 'page', issue: 'Nenhum bloqueio de teclado detectado.', status: 'approved', htmlSnippet: '', trapType: 'approved' });
         return results;
       };
@@ -1672,13 +1722,21 @@ app.post('/analyze', async (req, res) => {
       // ===== 13. analyzeStatusMessages (4.1.3) =====
       const analyzeStatusMessages = () => {
         const results = [];
+        const seen = new Set();
+        const addResult = (r) => {
+          const key = `${r.role}:${(r.htmlSnippet || '').slice(0, 80)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          results.push(r);
+        };
+
         // 1. Check elements with role="status"
         document.querySelectorAll('[role="status"]').forEach((el) => {
           const text = (el.textContent || '').trim();
           const ariaLive = el.getAttribute('aria-live') || '';
           const issues = [];
           if (!text && !el.children.length) issues.push('role="status" presente mas elemento vazio');
-          results.push({ element: el.tagName.toLowerCase(), role: 'status', text: text.slice(0, 200), ariaLive: ariaLive || 'polite (implícito)', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
+          addResult({ element: el.tagName.toLowerCase(), role: 'status', text: text.slice(0, 200), ariaLive: ariaLive || 'polite (implícito)', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
         });
         // 2. Check elements with role="alert"
         document.querySelectorAll('[role="alert"]').forEach((el) => {
@@ -1686,12 +1744,12 @@ app.post('/analyze', async (req, res) => {
           const ariaLive = el.getAttribute('aria-live') || '';
           const issues = [];
           if (!text && !el.children.length) issues.push('role="alert" presente mas elemento vazio');
-          results.push({ element: el.tagName.toLowerCase(), role: 'alert', text: text.slice(0, 200), ariaLive: ariaLive || 'assertive (implícito)', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
+          addResult({ element: el.tagName.toLowerCase(), role: 'alert', text: text.slice(0, 200), ariaLive: ariaLive || 'assertive (implícito)', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
         });
         // 3. Check elements with role="log"
         document.querySelectorAll('[role="log"]').forEach((el) => {
           const text = (el.textContent || '').trim();
-          results.push({ element: el.tagName.toLowerCase(), role: 'log', text: text.slice(0, 200), ariaLive: el.getAttribute('aria-live') || 'polite (implícito)', issues: [], status: 'approved', htmlSnippet: snippet(el, 400) });
+          addResult({ element: el.tagName.toLowerCase(), role: 'log', text: text.slice(0, 200), ariaLive: el.getAttribute('aria-live') || 'polite (implícito)', issues: [], status: 'approved', htmlSnippet: snippet(el, 400) });
         });
         // 4. Check elements with role="progressbar"
         document.querySelectorAll('[role="progressbar"]').forEach((el) => {
@@ -1701,56 +1759,83 @@ app.post('/analyze', async (req, res) => {
           const issues = [];
           if (!ariaValueNow && !ariaValueText) issues.push('Barra de progresso sem aria-valuenow ou aria-valuetext');
           if (!ariaLabel && !el.getAttribute('aria-labelledby')) issues.push('Barra de progresso sem label acessível');
-          results.push({ element: el.tagName.toLowerCase(), role: 'progressbar', text: ariaValueText || `${ariaValueNow || '?'}%`, ariaLive: el.getAttribute('aria-live') || '', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
+          addResult({ element: el.tagName.toLowerCase(), role: 'progressbar', text: ariaValueText || `${ariaValueNow || '?'}%`, ariaLive: el.getAttribute('aria-live') || '', issues, status: issues.length > 0 ? 'warning' : 'approved', htmlSnippet: snippet(el, 400) });
         });
         // 5. Check aria-live regions
         document.querySelectorAll('[aria-live]').forEach((el) => {
           const role = el.getAttribute('role') || '';
-          if (['status', 'alert', 'log', 'progressbar'].includes(role)) return; // already checked
+          if (['status', 'alert', 'log', 'progressbar'].includes(role)) return;
           const ariaLive = el.getAttribute('aria-live') || '';
           const text = (el.textContent || '').trim();
-          results.push({ element: el.tagName.toLowerCase(), role: role || '(sem role)', text: text.slice(0, 200), ariaLive, issues: [], status: 'approved', htmlSnippet: snippet(el, 400) });
+          addResult({ element: el.tagName.toLowerCase(), role: role || '(sem role)', text: text.slice(0, 200), ariaLive, issues: [], status: 'approved', htmlSnippet: snippet(el, 400) });
         });
-        // 6. Check forms for error messages without proper live regions
-        document.querySelectorAll('form').forEach((form) => {
-          const errorMsgs = form.querySelectorAll('[class*="error"], [class*="invalid"], [class*="danger"], .field-error, .form-error, .validation-error, .error-message');
-          errorMsgs.forEach((errEl) => {
-            const role = errEl.getAttribute('role') || '';
-            const ariaLive = errEl.getAttribute('aria-live') || '';
-            const hasLiveRegion = role === 'alert' || role === 'status' || !!ariaLive;
-            if (!hasLiveRegion) {
-              results.push({ element: errEl.tagName.toLowerCase(), role: '(sem role)', text: (errEl.textContent || '').trim().slice(0, 200), ariaLive: '(ausente)', issues: ['Mensagem de erro sem role="alert" ou aria-live — não será anunciada por leitores de tela'], status: 'error', htmlSnippet: snippet(errEl, 400) });
-            }
-          });
+
+        // 6. Check ALL forms (both <form> and standalone input groups) for missing live regions
+        const allForms = document.querySelectorAll('form');
+        allForms.forEach((form) => {
+          const hasLiveInForm = form.querySelector('[aria-live], [role="alert"], [role="status"]');
+          const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea');
+          if (inputs.length > 0 && !hasLiveInForm) {
+            addResult({ element: 'form', role: '(sem role)', text: '', ariaLive: '(ausente)', issues: ['Formulário sem região aria-live ou role="alert" interna — erros de validação não serão anunciados por leitores de tela'], status: 'error', htmlSnippet: snippet(form, 400) });
+          }
         });
-        // 7. Check toast/notification containers
+
+        // 7. Check for inputs outside forms that lack associated error feedback
+        const allInputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea');
+        allInputs.forEach((input) => {
+          const closestForm = input.closest('form');
+          if (closestForm) return; // already checked above
+          // Standalone input — check if there's aria-describedby or adjacent live region
+          const describedby = input.getAttribute('aria-describedby');
+          const parent = input.parentElement;
+          const nearbyLive = parent ? parent.querySelector('[aria-live], [role="alert"], [role="status"]') : null;
+          if (!describedby && !nearbyLive) {
+            addResult({ element: input.tagName.toLowerCase(), role: '(input avulso)', text: '', ariaLive: '(ausente)', issues: ['Campo de entrada fora de <form> sem aria-describedby ou região live adjacente — erros não serão anunciados'], status: 'warning', htmlSnippet: snippet(input, 400) });
+          }
+        });
+
+        // 8. Check error message elements without live regions
+        const errorSelectors = '[class*="error"], [class*="invalid"], [class*="danger"], .field-error, .form-error, .validation-error, .error-message';
+        document.querySelectorAll(errorSelectors).forEach((errEl) => {
+          const role = errEl.getAttribute('role') || '';
+          const ariaLive = errEl.getAttribute('aria-live') || '';
+          const hasLiveRegion = role === 'alert' || role === 'status' || !!ariaLive;
+          if (!hasLiveRegion) {
+            addResult({ element: errEl.tagName.toLowerCase(), role: '(sem role)', text: (errEl.textContent || '').trim().slice(0, 200), ariaLive: '(ausente)', issues: ['Mensagem de erro sem role="alert" ou aria-live — não será anunciada por leitores de tela'], status: 'error', htmlSnippet: snippet(errEl, 400) });
+          }
+        });
+
+        // 9. Check toast/notification containers
         const toastSelectors = '[class*="toast"], [class*="notification"], [class*="snackbar"], [class*="alert-banner"], [class*="flash-message"]';
         document.querySelectorAll(toastSelectors).forEach((el) => {
           const role = el.getAttribute('role') || '';
           const ariaLive = el.getAttribute('aria-live') || '';
           const hasLiveRegion = role === 'alert' || role === 'status' || !!ariaLive;
           if (!hasLiveRegion) {
-            results.push({ element: el.tagName.toLowerCase(), role: '(sem role)', text: (el.textContent || '').trim().slice(0, 200), ariaLive: '(ausente)', issues: ['Notificação/toast sem role ou aria-live — invisível para leitores de tela'], status: 'error', htmlSnippet: snippet(el, 400) });
+            addResult({ element: el.tagName.toLowerCase(), role: '(sem role)', text: (el.textContent || '').trim().slice(0, 200), ariaLive: '(ausente)', issues: ['Notificação/toast sem role ou aria-live — invisível para leitores de tela'], status: 'error', htmlSnippet: snippet(el, 400) });
           }
         });
-        // Even if we found some aria-live regions, check if forms lack associated status messages
-        const allForms = document.querySelectorAll('form');
-        allForms.forEach((form) => {
-          const hasLiveInForm = form.querySelector('[aria-live], [role="alert"], [role="status"]');
-          const hasInputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]), select, textarea').length;
-          if (hasInputs > 0 && !hasLiveInForm) {
-            results.push({ element: 'form', role: '(sem role)', text: '', ariaLive: '(ausente)', issues: ['Formulário sem região aria-live/role="alert" — erros de validação não serão anunciados por leitores de tela'], status: 'error', htmlSnippet: snippet(form, 400) });
+
+        // 10. Check buttons/interactive elements that likely produce dynamic feedback
+        const dynamicSelectors = 'button[type="submit"], [class*="submit"], [class*="save"], [class*="delete"], [class*="remove"]';
+        document.querySelectorAll(dynamicSelectors).forEach((el) => {
+          const parent = el.closest('form') || el.parentElement;
+          if (!parent) return;
+          const hasLiveNearby = parent.querySelector('[aria-live], [role="alert"], [role="status"]');
+          if (!hasLiveNearby) {
+            const text = (el.textContent || '').trim().slice(0, 60);
+            addResult({ element: el.tagName.toLowerCase(), role: '(ação)', text, ariaLive: '(ausente)', issues: [`Botão "${text}" sem região live associada — feedback da ação não será anunciado`], status: 'warning', htmlSnippet: snippet(el, 400) });
           }
         });
-        
+
         if (results.length === 0) {
           const hasForms = document.querySelectorAll('form').length > 0;
           const hasButtons = document.querySelectorAll('button, [role="button"]').length > 0;
           const hasDynamicContent = hasForms || hasButtons || document.querySelectorAll('[class*="counter"], [class*="cart"], [class*="count"], [id*="status"], [id*="count"]').length > 0;
           if (hasDynamicContent) {
-            results.push({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: ['Página com conteúdo interativo mas sem regiões aria-live ou role="status" — mudanças dinâmicas não serão anunciadas'], status: 'error', htmlSnippet: '' });
+            addResult({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: ['Página com conteúdo interativo mas sem regiões aria-live ou role="status" — mudanças dinâmicas não serão anunciadas'], status: 'error', htmlSnippet: '' });
           } else {
-            results.push({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: [], status: 'approved', htmlSnippet: '' });
+            addResult({ element: 'page', role: '(nenhum)', text: '', ariaLive: '', issues: [], status: 'approved', htmlSnippet: '' });
           }
         }
         return results;
