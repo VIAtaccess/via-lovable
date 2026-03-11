@@ -479,8 +479,17 @@ app.post('/analyze', async (req, res) => {
           if (!text && !ariaLabel) addResult({ element: el.tagName.toLowerCase(), text: '(sem texto)', issue: 'Indicador de status sem texto — informação apenas por cor.', status: 'error', htmlSnippet: snippet(el, 400), colorType: 'status' });
         });
 
-        // BONUS: Contrast ratio check (Puppeteer advantage!)
-        const checkContrast = (fg, bg) => {
+        if (results.length === 0) results.push({ element: 'page', text: '', issue: 'Nenhum problema de cor detectado', status: 'approved', htmlSnippet: '', colorType: 'general' });
+        return results;
+      };
+
+      // ===== 6b. analyzeContrast (WCAG 1.4.3) =====
+      const analyzeContrast = () => {
+        const results = [];
+        const seen = new Set();
+        const addResult = (r) => { const key = `${r.element}:${r.text.slice(0, 60)}`; if (seen.has(key)) return; seen.add(key); results.push(r); };
+
+        const checkContrastRatio = (fg, bg) => {
           const luminance = (r, g, b) => {
             const [rs, gs, bs] = [r, g, b].map(c => { c = c / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
             return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
@@ -498,33 +507,50 @@ app.post('/analyze', async (req, res) => {
           return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
         };
 
-        // Sample text elements for contrast
-        const textElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, span, a, li, td, th, label, button');
-        let contrastChecked = 0;
+        // Resolve background color by walking up the DOM tree
+        const getEffectiveBg = (el) => {
+          let current = el;
+          while (current && current !== document.documentElement) {
+            try {
+              const bg = window.getComputedStyle(current).backgroundColor;
+              if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return bg;
+            } catch(e) {}
+            current = current.parentElement;
+          }
+          return 'rgb(255, 255, 255)'; // default white
+        };
+
+        const textElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, span, a, li, td, th, label, button, strong, em, b, i, small, blockquote, figcaption, dt, dd, caption');
+        let checked = 0;
         textElements.forEach((el) => {
-          if (contrastChecked >= 50) return; // limit
+          if (checked >= 200) return;
           const text = el.textContent?.trim() || '';
           if (!text || text.length < 2) return;
+          // Skip if element has children that are also text elements (avoid double-counting)
+          if (el.children.length > 0 && !el.closest('button, a, label')) {
+            const directText = Array.from(el.childNodes).filter(n => n.nodeType === 3 && n.textContent.trim()).length;
+            if (directText === 0) return;
+          }
           try {
             const computed = window.getComputedStyle(el);
             const fg = computed.color;
-            const bg = computed.backgroundColor;
-            if (bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') return;
-            const ratio = checkContrast(fg, bg);
-            if (ratio !== null && ratio < 4.5) {
-              const fontSize = parseFloat(computed.fontSize);
-              const fontWeight = parseInt(computed.fontWeight) || 400;
-              const isLargeText = fontSize >= 24 || (fontSize >= 18.66 && fontWeight >= 700);
-              const minRatio = isLargeText ? 3 : 4.5;
-              if (ratio < minRatio) {
-                addResult({ element: el.tagName.toLowerCase(), text: text.slice(0, 100), issue: `Contraste insuficiente: ${ratio.toFixed(2)}:1 (mínimo ${minRatio}:1). Cor: ${fg}, Fundo: ${bg}`, status: ratio < 3 ? 'error' : 'warning', htmlSnippet: snippet(el, 400), colorType: 'text-element' });
-                contrastChecked++;
-              }
+            const bg = getEffectiveBg(el);
+            const ratio = checkContrastRatio(fg, bg);
+            if (ratio === null) return;
+            checked++;
+            const fontSize = parseFloat(computed.fontSize);
+            const fontWeight = parseInt(computed.fontWeight) || 400;
+            const isLargeText = fontSize >= 24 || (fontSize >= 18.66 && fontWeight >= 700);
+            const minRatio = isLargeText ? 3 : 4.5;
+            if (ratio < minRatio) {
+              addResult({ element: el.tagName.toLowerCase(), text: text.slice(0, 150), issue: `Contraste insuficiente: ${ratio.toFixed(2)}:1 (mínimo ${minRatio}:1)`, status: ratio < 3 ? 'error' : 'warning', htmlSnippet: snippet(el, 400), contrastType: 'insufficient', color: fg, background: bg, ratio: ratio.toFixed(2), required: `${minRatio}:1`, fontSize: Math.round(fontSize), fontWeight: String(fontWeight), isLargeText });
+            } else {
+              addResult({ element: el.tagName.toLowerCase(), text: text.slice(0, 150), issue: `Contraste adequado: ${ratio.toFixed(2)}:1 (mínimo ${minRatio}:1)`, status: 'approved', htmlSnippet: snippet(el, 400), contrastType: 'sufficient', color: fg, background: bg, ratio: ratio.toFixed(2), required: `${minRatio}:1`, fontSize: Math.round(fontSize), fontWeight: String(fontWeight), isLargeText });
             }
           } catch(e) {}
         });
 
-        if (results.length === 0) results.push({ element: 'page', text: '', issue: 'Nenhum problema de cor detectado', status: 'approved', htmlSnippet: '', colorType: 'general' });
+        if (results.length === 0) results.push({ element: 'page', text: '', issue: 'Nenhum elemento de texto encontrado para verificação de contraste', status: 'approved', htmlSnippet: '', contrastType: 'none', color: '', background: '', ratio: '', required: '', fontSize: 0, fontWeight: '400', isLargeText: false });
         return results;
       };
 
@@ -1766,6 +1792,7 @@ app.post('/analyze', async (req, res) => {
       const sequence = analyzeSequence();
       const sensory = analyzeSensory();
       const color = analyzeColor();
+      const contrast = analyzeContrast();
       const audioControl = analyzeAudioControl();
       const keyboard = analyzeKeyboard();
       const keyboardTrap = analyzeKeyboardTrap();
@@ -1936,6 +1963,7 @@ app.post('/analyze', async (req, res) => {
         { id: '1.3.2', name: 'Sequência Significativa', wcagLevel: 'A', ...countByStatus(sequence) },
         { id: '1.3.3', name: 'Características Sensoriais', wcagLevel: 'A', ...countByStatus(sensory) },
         { id: '1.4.1', name: 'Uso de Cor', wcagLevel: 'A', ...countByStatus(color) },
+        { id: '1.4.3', name: 'Contraste Mínimo', wcagLevel: 'AA', ...countByStatus(contrast) },
         { id: '1.4.2', name: 'Controle de Áudio', wcagLevel: 'A', ...countByStatus(audioControl) },
         { id: '2.1.1', name: 'Teclado', wcagLevel: 'A', ...countByStatus(keyboard) },
         { id: '2.1.2', name: 'Sem Bloqueio de Teclado', wcagLevel: 'A', ...countByStatus(keyboardTrap) },
@@ -1984,6 +2012,7 @@ app.post('/analyze', async (req, res) => {
         sequence: { ...countByStatus(sequence), items: sortByStatus(sequence) },
         sensory: { ...countByStatus(sensory), items: sensory },
         color: { ...countByStatus(color), items: color },
+        contrast: { ...countByStatus(contrast), items: sortByStatus(contrast) },
         audioControl: { ...countByStatus(audioControl), items: audioControl },
         keyboard: { ...countByStatus(keyboard), items: keyboard },
         keyboardTrap: { ...countByStatus(keyboardTrap), items: keyboardTrap },
