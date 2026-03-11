@@ -554,6 +554,82 @@ app.post('/analyze', async (req, res) => {
         return results;
       };
 
+      // ===== 6c. analyzeTextSpacing (WCAG 1.4.12) =====
+      const analyzeTextSpacing = () => {
+        const results = [];
+        const seen = new Set();
+        const addResult = (r) => { const key = `${r.element}:${(r.text || '').slice(0, 60)}`; if (seen.has(key)) return; seen.add(key); results.push(r); };
+
+        const textEls = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, span, a, li, td, th, label, blockquote, figcaption, dt, dd, caption, div');
+        let checked = 0;
+        textEls.forEach((el) => {
+          if (checked >= 150) return;
+          const text = el.textContent?.trim() || '';
+          if (!text || text.length < 3) return;
+          // Only check leaf-ish text nodes
+          const directText = Array.from(el.childNodes).filter(n => n.nodeType === 3 && n.textContent.trim()).length;
+          if (directText === 0 && el.tagName !== 'P' && el.tagName !== 'LI') return;
+
+          try {
+            const cs = window.getComputedStyle(el);
+            const fontSize = parseFloat(cs.fontSize) || 16;
+            const lineHeight = parseFloat(cs.lineHeight) || fontSize * 1.2;
+            const letterSpacing = parseFloat(cs.letterSpacing) || 0;
+            const wordSpacing = parseFloat(cs.wordSpacing) || 0;
+
+            // WCAG 1.4.12 thresholds (relative to font size)
+            const lineHeightRatio = lineHeight / fontSize;
+            const letterSpacingRatio = letterSpacing / fontSize;
+            const wordSpacingRatio = wordSpacing / fontSize;
+
+            // Check paragraph spacing (margin-bottom or padding-bottom)
+            const marginBottom = parseFloat(cs.marginBottom) || 0;
+            const paraSpacingRatio = marginBottom / fontSize;
+
+            const issues = [];
+            if (lineHeightRatio < 1.5) issues.push(`line-height: ${lineHeightRatio.toFixed(2)}em (mín: 1.5em)`);
+            if (letterSpacingRatio < 0.12) issues.push(`letter-spacing: ${letterSpacingRatio.toFixed(3)}em (mín: 0.12em)`);
+            if (wordSpacingRatio < 0.16) issues.push(`word-spacing: ${wordSpacingRatio.toFixed(3)}em (mín: 0.16em)`);
+            if (el.tagName === 'P' && paraSpacingRatio < 2) issues.push(`Espaçamento entre parágrafos: ${paraSpacingRatio.toFixed(2)}em (mín: 2em)`);
+
+            checked++;
+
+            if (issues.length > 0) {
+              addResult({
+                element: el.tagName.toLowerCase(),
+                text: text.slice(0, 120),
+                issue: issues.join(' · '),
+                status: issues.some(i => i.includes('line-height')) ? 'error' : 'warning',
+                htmlSnippet: snippet(el, 400),
+                spacingType: 'insufficient',
+                lineHeight: lineHeightRatio.toFixed(2),
+                letterSpacing: letterSpacingRatio.toFixed(3),
+                wordSpacing: wordSpacingRatio.toFixed(3),
+                paraSpacing: el.tagName === 'P' ? paraSpacingRatio.toFixed(2) : null,
+                fontSize: Math.round(fontSize),
+              });
+            } else {
+              addResult({
+                element: el.tagName.toLowerCase(),
+                text: text.slice(0, 120),
+                issue: 'Espaçamento adequado',
+                status: 'approved',
+                htmlSnippet: snippet(el, 400),
+                spacingType: 'sufficient',
+                lineHeight: lineHeightRatio.toFixed(2),
+                letterSpacing: letterSpacingRatio.toFixed(3),
+                wordSpacing: wordSpacingRatio.toFixed(3),
+                paraSpacing: el.tagName === 'P' ? paraSpacingRatio.toFixed(2) : null,
+                fontSize: Math.round(fontSize),
+              });
+            }
+          } catch(e) {}
+        });
+
+        if (results.length === 0) results.push({ element: 'page', text: '', issue: 'Nenhum elemento de texto encontrado', status: 'approved', htmlSnippet: '', spacingType: 'none', lineHeight: '0', letterSpacing: '0', wordSpacing: '0', paraSpacing: null, fontSize: 0 });
+        return results;
+      };
+
       // ===== 7. analyzeAudioControl =====
       const analyzeAudioControl = () => {
         const results = [];
@@ -1241,6 +1317,45 @@ app.post('/analyze', async (req, res) => {
         return results;
       };
 
+      // ===== 9g2. analyzeTargetSize (WCAG 2.5.5 / 2.5.8) =====
+      const analyzeTargetSize = () => {
+        const results = [];
+        const seen = new Set();
+        const addResult = (r) => { const key = `${r.element}:${(r.htmlSnippet || '').slice(0, 80)}`; if (seen.has(key)) return; seen.add(key); results.push(r); };
+
+        const interactiveEls = document.querySelectorAll('a, button, input:not([type="hidden"]), select, textarea, [role="button"], [role="link"], [role="tab"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [tabindex="0"]');
+        let checked = 0;
+        interactiveEls.forEach((el) => {
+          if (checked >= 200) return;
+          try {
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) return; // hidden
+            if (rect.top < 0 || rect.left < 0) return; // off-screen
+            checked++;
+            const tag = el.tagName.toLowerCase();
+            const text = (el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim().slice(0, 80);
+            const w = Math.round(rect.width);
+            const h = Math.round(rect.height);
+            const minSize = 24; // WCAG 2.5.8 Level AA
+
+            if (w < minSize || h < minSize) {
+              const isInline = tag === 'a' && el.closest('p, li, td, span');
+              if (isInline) {
+                // Inline links are exempt from target size requirements
+                addResult({ element: tag, text, issue: `Link inline ${w}×${h}px — isento do requisito de tamanho alvo`, status: 'approved', htmlSnippet: snippet(el, 300), targetType: 'inline-exempt', width: w, height: h, minRequired: minSize });
+              } else {
+                addResult({ element: tag, text, issue: `Alvo ${w}×${h}px — menor que ${minSize}×${minSize}px`, status: w < 20 || h < 20 ? 'error' : 'warning', htmlSnippet: snippet(el, 300), targetType: 'too-small', width: w, height: h, minRequired: minSize });
+              }
+            } else {
+              addResult({ element: tag, text, issue: `Alvo ${w}×${h}px — tamanho adequado`, status: 'approved', htmlSnippet: snippet(el, 300), targetType: 'sufficient', width: w, height: h, minRequired: minSize });
+            }
+          } catch(e) {}
+        });
+
+        if (results.length === 0) results.push({ element: 'page', text: '', issue: 'Nenhum elemento interativo encontrado', status: 'approved', htmlSnippet: '', targetType: 'none', width: 0, height: 0, minRequired: 24 });
+        return results;
+      };
+
       // ===== 9h. analyzePointerCancellation (WCAG 2.5.2) =====
       const analyzePointerCancellation = () => {
         const results = [];
@@ -1793,6 +1908,7 @@ app.post('/analyze', async (req, res) => {
       const sensory = analyzeSensory();
       const color = analyzeColor();
       const contrast = analyzeContrast();
+      const textSpacing = analyzeTextSpacing();
       const audioControl = analyzeAudioControl();
       const keyboard = analyzeKeyboard();
       const keyboardTrap = analyzeKeyboardTrap();
@@ -1801,6 +1917,7 @@ app.post('/analyze', async (req, res) => {
       const movingContent = analyzeMovingContent();
       
       const focusOrder = analyzeFocusOrder();
+      const targetSize = analyzeTargetSize();
       const pointerGestures = analyzePointerGestures();
       const pointerCancellation = analyzePointerCancellation();
       const labelInName = analyzeLabelInName();
@@ -1964,6 +2081,7 @@ app.post('/analyze', async (req, res) => {
         { id: '1.3.3', name: 'Características Sensoriais', wcagLevel: 'A', ...countByStatus(sensory) },
         { id: '1.4.1', name: 'Uso de Cor', wcagLevel: 'A', ...countByStatus(color) },
         { id: '1.4.3', name: 'Contraste Mínimo', wcagLevel: 'AA', ...countByStatus(contrast) },
+        { id: '1.4.12', name: 'Espaçamento de Texto', wcagLevel: 'AA', ...countByStatus(textSpacing) },
         { id: '1.4.2', name: 'Controle de Áudio', wcagLevel: 'A', ...countByStatus(audioControl) },
         { id: '2.1.1', name: 'Teclado', wcagLevel: 'A', ...countByStatus(keyboard) },
         { id: '2.1.2', name: 'Sem Bloqueio de Teclado', wcagLevel: 'A', ...countByStatus(keyboardTrap) },
@@ -1976,6 +2094,7 @@ app.post('/analyze', async (req, res) => {
         { id: '2.5.2', name: 'Cancelamento de Ponteiro', wcagLevel: 'A', ...countByStatus(pointerCancellation) },
         { id: '2.5.3', name: 'Rótulo em Nome', wcagLevel: 'A', ...countByStatus(labelInName) },
         { id: '2.5.4', name: 'Atuação em Movimento', wcagLevel: 'A', ...countByStatus(motionActuation) },
+        { id: '2.5.5', name: 'Tamanho do Alvo', wcagLevel: 'AAA', ...countByStatus(targetSize) },
         { id: '2.4.1', name: 'Ignorar Blocos', wcagLevel: 'A', ...countByStatus(metaBycriterion['2.4.1']) },
         { id: '2.4.2', name: 'Página com Título', wcagLevel: 'A', ...countByStatus(metaBycriterion['2.4.2']) },
         { id: '2.4.4', name: 'Finalidade do Link', wcagLevel: 'A', ...countByStatus(links) },
@@ -2013,6 +2132,7 @@ app.post('/analyze', async (req, res) => {
         sensory: { ...countByStatus(sensory), items: sensory },
         color: { ...countByStatus(color), items: color },
         contrast: { ...countByStatus(contrast), items: sortByStatus(contrast) },
+        textSpacing: { ...countByStatus(textSpacing), items: sortByStatus(textSpacing) },
         audioControl: { ...countByStatus(audioControl), items: audioControl },
         keyboard: { ...countByStatus(keyboard), items: keyboard },
         keyboardTrap: { ...countByStatus(keyboardTrap), items: keyboardTrap },
@@ -2021,6 +2141,7 @@ app.post('/analyze', async (req, res) => {
         movingContent: { ...countByStatus(movingContent), items: movingContent },
         
         focusOrder: { ...countByStatus(focusOrder), items: focusOrder },
+        targetSize: { ...countByStatus(targetSize), items: sortByStatus(targetSize) },
         pointerGestures: { ...countByStatus(pointerGestures), items: pointerGestures },
         pointerCancellation: { ...countByStatus(pointerCancellation), items: pointerCancellation },
         labelInName: { ...countByStatus(labelInName), items: labelInName },
